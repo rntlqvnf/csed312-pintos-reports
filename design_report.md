@@ -5,6 +5,32 @@
 
 ## Analysis of the current thread system
 
+------
+
+### Structure of a thread
+
+- 
+
+
+
+### Just after the boot process
+
+
+
+### Creation of a thread
+
+
+
+### Scheduling the threads
+
+
+
+### Death of a thread
+
+
+
+
+
 ## Analysis of the current synchronization
 
 ## Solutions
