@@ -5,8 +5,6 @@
 
 ## Analysis of the current thread system
 
-------
-
 ### Thread structure
 
 - 구조체 thread는 threads/thread.h에 아래 코드와 같이 정의되어 있다. 멤버를 하나하나 살펴보자면, tid는 thread id를 나타내고, status는 thread의 state를 나타낸다. name은 debugging을 목적으로 thread의 이름을 저장하고 있고, stack은 현재 thread의 stack pointer을 의미한다. priority는 아래에서 더 구체적으로 다루겠지만 thread의 우선 순위를 나타낸다. 
