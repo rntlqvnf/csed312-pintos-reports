@@ -8,3 +8,9 @@
 ## Analysis of the current synchronization
 
 ## Solutions
+
+### 1. Alarm Clock
+
+### 2. Priority scheduling
+
+### 3. Advanced scheduler
