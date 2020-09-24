@@ -440,18 +440,45 @@ schedule (void)
 
 통과해야 하는 test들은 다음과 같다.
 
-- priority-change
-- priority-donate-one
-- priority-donate-multiple
-- priority-donate-multiple2
-- priority-donate-chain
-- priority-donate-nest
-- priority-donate-sema
-- priority-fifo
-- priority-preempt
-- priority-sema
-- priority-condvar
-- priority-fifo
+- **priority-change**
+  : Verifies that lowering a thread's priority so that it is no longer the highest-priority thread in the system causes it to yield immediately
+
+- **priority-fifo**
+  : Creates several threads all at the same priority and ensures that they consistently run in the same round-robin order
+
+- **priority-preempt**
+  : Ensures that a high-priority thread really preempts
+
+- **priority-sema**
+  : Tests that the highest-priority thread waiting on a semaphore is the first to wake up
+
+- **priority-condvar**
+  : Tests that cond_signal() wakes up the highest-priority thread waiting in cond_wait()
+
+- **priority-donate-one**
+  : The main thread acquires a lock.  Then it creates two higher-priority threads that block acquiring the lock, causing them to donate their priorities to the main thread. When the main thread releases the lock, the other threads should acquire it in priority order
+
+- **priority-donate-multiple**
+  : The main thread acquires locks A and B, then it creates two higher-priority threads. Each of these threads blocks acquiring one of the locks and thus donate their priority to the main thread. The main thread releases the locks in turn and relinquishes its donated priorities
+
+- **priority-donate-multiple2**
+  : The main thread acquires locks A and B, then it creates three higher-priority threads. The first two of these threads block acquiring one of the locks and thus donate their priority to the main thread. The main thread releases the locks in turn and relinquishes its donated priorities, allowing the third thread to run.
+  In this test, the main thread releases the locks in a different order compared to priority-donate-multiple.c
+
+- **priority-donate-chain**
+  : The main thread set its priority to PRI_MIN and creates 7 threads (thread 1..7) with priorities PRI_MIN + 3, 6, 9, 12, ...
+  The main thread initializes 8 locks: lock 0..7 and acquires lock 0.
+  When thread[i] starts, it first acquires lock[i] (unless i == 7.) Subsequently, thread[i] attempts to acquire lock[i-1], which is held by thread[i-1], except for lock[0], which is held by the main thread.
+  Because the lock is held, thread[i] donates its priority to thread[i-1], which donates to thread[i-2], and so on until the main thread receives the donation.
+  After threads[1..7] have been created and are blocked on locks[0..7], the main thread releases lock[0], unblocking thread[1], and being preempted by it/
+  Thread[1] then completes acquiring lock[0], then releases lock[0], then releases lock[1], unblocking thread[2], etc.
+  Thread[7] finally acquires & releases lock[7] and exits, allowing thread[6], then thread[5] etc. to run and exit until finally the main thread exits.
+ 
+- **priority-donate-nest**
+  : Low-priority main thread L acquires lock A.  Medium-priority thread M then acquires lock B then blocks on acquiring lock A.  High-priority thread H then blocks on acquiring lock B.  Thus,thread H donates its priority to M, which in turn donates itto thread L.
+ 
+- **priority-donate-sema**
+  : Low priority thread L acquires a lock, then blocks downing a semaphore.  Medium priority thread M then blocks waiting on the same semaphore.  Next, high priority thread H attempts to acquire the lock, donating its priority to L. Next, the main thread ups the semaphore, waking up L.  L releases the lock, which wakes up H.  H "up"s the semaphore, waking up M.  H terminates, then M, then L, and finally the main thread.
 
 ##### Priority scheduling
 
@@ -472,11 +499,11 @@ bool priority_compare(struct list_elem* a, struct list_elem* b, void* aux){}
 
 ###### Change
 
-- **Modify** `thread_yield()`, `thread_unblock()`
+- `thread_yield()`, `thread_unblock()`
   
   : `list_push_back (&ready_list, &cur->elem)` -> `list_insert_ordered(&ready_list, &cur->elem, priority_compare, NULL);`
 
-- **Add** `thread_create()`
+- `thread_create()`
 
   ```c++
   {
@@ -485,7 +512,7 @@ bool priority_compare(struct list_elem* a, struct list_elem* b, void* aux){}
   }
   ```
 
-- **Add** `thread_set_priority()`
+- `thread_set_priority()`
   ```c++
   {
     if(newPriority < currentPriority)
@@ -514,6 +541,184 @@ list_insert_ordered(&ready_list, &cur->elem, priority_compare, NULL);
 
 ##### Priority donation
 
+###### Data Structure
 
+```c++
+struct lock 
+  {
+    ...
+    bool is_donated;
+  }
+```
+
+```c++
+struct thread
+  {
+    ...
+    int original_priority;
+    list donators; //struct thread
+    struct lock lock_on_wait;
+  }
+```
+
+###### Create
+
+문법 상관없이 수도코드처럼 썼습니다.
+
+```c++
+/**
+* In synch.c
+* Donate priority from current thread to lock->holder
+* Register in current thread's donated_priorities
+* @param struct lock
+*/
+void priority_donate(struct lock* lock){
+  thread_current()->lock_on_wait = lock;
+  lock->holder->priority = thread_current()->priority;
+  lock->holder->donators.INSERT_ORDERED_BY_PRIORITY(thread_current());
+  lock->is_donated = true;
+}
+```
+
+```c++
+/**
+* In synch.c
+* Restore current thread's priority
+* If no donators left, then set to initial value
+* Else set as highest priority among donators.
+* @param struct lock
+*/
+void priority_restore(struct lock* lock){
+  if(donators.ISEMPTY)
+    thread_current()->priority = thread_current()->original_priority;
+  else {
+    thread_to_remove =  max_priority(donators.filter(() => donator->lock_on_wait == lock));
+    thread_current()->priority = thread_to_remove->priority;
+    donators.remove(thread_to_remove);
+  }
+}
+```
+
+```c++
+/**
+* In synch.c
+* Check whether needs donation
+* @return true (If donation needed)
+* @return false (If donation is not needed)
+*/
+bool require_donation(struct lock* lock){
+  return lock->holder != NULL && lock->holder->priority < thread_current().priority ? true : false;
+}
+```
+
+```c++
+/**
+* In thread.c
+* @return current thread's priority
+*/
+int thread_get_priority(){
+  return thread_current().priority;
+}
+```
+
+```c++
+/**
+* In thread.c
+* Determine whether call thead_yield is not contained in this code
+* See above
+* @param new priority
+*/
+int thread_set_priority(int new_priority){
+  thread_current().priority = new_priority;
+}
+```
+
+###### Change
+
+- `lock_aquire()`
+  ```c++
+  /**
+  * In synch.c
+  * If donation needs, do donation
+  * Else store original priority
+  */
+  {
+    if(require_donation(lock))
+      priority_donate(lock);
+    else
+      thread_current()->original_priority = thread_current()->priority;
+  }
+  ```
+- `lock_release()`
+  ```c++
+  /**
+  * In synch.c
+  * If donationed lock, restore donation
+  * Else do nothing (Except original behavior)
+  */
+  {
+    if(lock.is_donated)
+      priority_restore(lock);
+  }
+  ```
+
+- `sema_up()`
+  ```c++
+  /**
+  * To pass priority-sema test, pop highest priority thread.
+  */
+  {
+    //thread_unblock (list_entry (list_pop_front (&sema->waiters), struct thread, elem));
+    list_sort(&sema->waiters, priority_compare, 0);
+    thread_unblock (list_entry (list_pop_front (&sema->waiters), struct thread, elem));
+  }
+  ```
+  
+- `cond_signal()`
+  ```c++
+  /**
+  * To pass priority-condvar test, pop highest priority element.
+  */
+  {
+    /*
+    if (!list_empty (&cond->waiters)) 
+      sema_up (&list_entry (list_pop_front (&cond->waiters),
+                            struct semaphore_elem, elem)->semaphore);
+    */
+    if (!list_empty (&cond->waiters)) {
+      list_sort(&cond->waiters, priority_compare, 0);
+      sema_up (&list_entry (list_pop_front (&cond->waiters),
+                            struct semaphore_elem, elem)->semaphore);
+    }
+  }
+  ```
+
+###### Algorithm 
+
+알고리즘은 크게 4가지의 흐름으로 나눌 수 있다.
+
+- Donation이 필요하지 않은 `lock_aquire()`
+  
+  이 경우, 이후에 donation이 들어올 것을 대비하여 original priority만 저장해두면 된다.
+
+- Donation이 필요한 `lock_aquire()`
+  
+  이 경우, lock holder에게 priority를 donate하고, 해당 holder의 donators에 가입한다.
+  
+  이후 이 donators를 통해 release가 이뤄진다.
+
+  또한, donators를 탐색할 때, 어떤 lock에 의해 donating이 된건지 알아야 하므로 lock_on_wait 값을 저장해준다.
+
+- Donation이 되어있지 않은 `lock_release()`
+  
+  이 경우, 별다른 처리가 필요하지 않으므로 아무런 추가 동작이 없다.
+
+- Donation이 되어있는 `lock_release()`
+  
+  이 경우, priority donation을 roll back 해야 한다.
+
+  그런데, 여러 thread에서 donation을 받았을 가능성이 있으므로, donator list의 priority 값들 중에서 가장 높은 값으로 roll back한다.
+
+  그리고 선택된 thread는 donator list에서 삭제한다.
 
 ### 3. Advanced scheduler
