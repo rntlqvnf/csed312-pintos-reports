@@ -3,9 +3,9 @@
 - 20180673 하재현
 - 20180501 최진수
 
-## Analysis of the current thread system
+# Analysis of the current thread system
 
-### Thread structure
+## Thread structure
 
 ```c++
 struct thread
@@ -39,7 +39,7 @@ struct thread
   
 모든 thread structure은 각자 4kB page를 차지한다. 위의 코드에서 보이는 구조체 내 원소들은(structure 자체는) page offset 0에 저장되고, 나머지 page는 offset 4kB(top of the page)로부터 시작해서 아래쪽으로 자라는, thread의 kernel stack에 위치하게 된다. 
 
-### Initializing threading system
+## Initializing threading system
 
 ```c++
 void thread_init (void) 
@@ -64,7 +64,7 @@ void thread_init (void)
 
 구체적으론 run queue와 tid lock을 initializing하며, 이 함수를 호출한 이후에는 아래에서 다룰 ` thread_create() ` 함수를 이용해 thread를 생성하기 전에 page allocator를 initialize해야만 한다.
  
-### Thread creation
+## Thread creation
 
 ```c++
 tid_t thread_create (const char *name, int priority,
@@ -129,7 +129,7 @@ context switching이 일어날 수 있도록 3개의 stack frame(kernel thread, 
 
 생성된 thread는 blocked state로 초기화되는데, return 전에 unblocked 상태로 만들어 새로운 thread가 schedule 될 수 있게 해준다.
 
-### Thread scheduler
+## Thread scheduler
 
 ```c++
 void
@@ -168,7 +168,7 @@ thread_start (void)
 
 이것은 Timer interrupt handler에서 thread의 time slice가 만료되었을 때 새로운 thread가 호출되도록 하는 역할을 한다.
 
-### Thread completion
+## Thread completion
 
 ```c++
 void
@@ -197,7 +197,7 @@ thread가 task 수행을 완료할 때 `thread_exit()` 함수의 호출을 통�
 
 그리고 page를 free하게 된다.
 
-## Analysis of the current synchronization
+# Analysis of the current synchronization
 
 multi thread 환경을 구현할 때에는 thread간의 자원 공유에 대해서 매우 신경을 써야 한다.
 
@@ -205,7 +205,7 @@ multi thread 환경을 구현할 때에는 thread간의 자원 공유에 대해�
 
 이런 불상사를 막기 위해 Synchronization, 즉 스레드들이 수행되는 시점을 적절히 조절하는 것이 필요하다.
 
-### 1. Semaphores
+## 1. Semaphores
 
 > Pintos synchronization의 핵심
 
@@ -296,7 +296,7 @@ sema_up (struct semaphore *sema)
 
 `up`은 priority에 상관없이, **FIFO**로 waiting thread를 선택하여 unblock 한 후 값을 1 증가시킨다.
 
-### 2. Locks
+## 2. Locks
 
 **lock**은 1로 초기화된 semaphore에 owner 기능을 추가하고, `up`, `down`을 각각 `release`, `acquire`로 표현한 것이다.
 
@@ -358,7 +358,7 @@ lock_release (struct lock *lock)
 
 release는 현재 thread가 lock의 owner인지 체크하고, 그렇다면 `semaphore up` 동작을 실행하며 owner를 초기화한다.
 
-### 3. Monitors
+## 3. Monitors
 
 > semaphore나 lock보다 상위 레벨의 synchronization 기법
 
@@ -453,13 +453,56 @@ cond_broadcast (struct condition *cond, struct lock *lock)
 
 `broadcast` 는 해당 condition이 만족되길 기다리는 모든 thread들에 대해 blocking을 해제한다.
 
-## Solutions
+# Solutions
 
-### 1. Alarm Clock
+## 1. Alarm Clock
 
-### 2. Priority scheduling
+### Current Implementation
 
-#### Current Implementation
+```c++
+void timer_sleep (int64_t ticks) 
+{
+  int64_t start = timer_ticks ();
+
+  ASSERT (intr_get_level () == INTR_ON);
+  while (timer_elapsed (start) < ticks) 
+    thread_yield ();
+}
+```
+
+- ```devices/timer.c```에 정의되어 있는  ```timer_sleep()``` 함수를 reimplement하는 것이 목표이다.
+- Pintos에서 기본으로 제공되는 working implementation은 루프 내에서 current time을 확인하다가 충분히 긴 시간이 지나면 ```thread_yield()```를 호출하는 busy waiting 방식을 채택한다. 앞서 말한 reimplement의 목적은 busy waiting이 일어나지 않도록 하는 것이다.
+- 아래 함수 ```timer_sleep()```는 calling thread의 실행을 시간이 x timer tick 이상 지날 때까지 중단하는 역할을 한다. system이 idle하지 않은 이상 thread가 정확히 x ticks 이후에 일어날 필요는 없다. 따라서 x ticks 이상 지났을 때 이 함수는 ```thread_yield()``` 함수를 이용해 thread를 ready queue에 넣어주기만 하면 된다.
+
+### New Implementation
+
+#### Tests
+
+#### Data structure
+
+- ```struct thread```에 tick(얼마나 있다가 wake 해야 하는지)을 저장할 member을 추가해야 한다.
+- ready queue 이외에 새로운 list인 sleep queue가 필요하게 됐으니 그 자료구조를 추가해야 한다. 이때 sleep queue의 자료구조는 priority queue와 비슷한 형태로, priority는 tick을 기준으로 한다.
+
+#### Create
+
+- thread를 ready queue에서 sleep queue로 옮겨주는 ```sleep()``` 함수를 추가해야 한다. 구체적으로 ```sleep()``` 함수는 현재 thread가 idle이 아닐 때 state를 BLOCKED로 바꾸고 sleep queue에 추가한다.
+- thread를 sleep queue에서 깨워서 다시 ready queue로 옮겨주는 ```wake()``` 함수를 추가해야 한다. 구체적으로 ```wake()``` 함수는 sleep queue의 모든 원소를 순회하며 wake해야 할 thread를 sleep queue에서 제거해 ready queue로 옮겨주는 기능을 해야 한다.
+- sleep queue의 thread가 갖고 있는 남은 tick 값을 tick마다 감소시켜주는 ```update()``` 함수를 추가해야 한다.
+
+#### Change
+
+- 주어진  ```thread_init()``` 함수는 ready queue만을 초기화 하고 있으므로 새로 추가된 data structure인 sleep queue를 초기화해주는 역할이 추가되어야 한다.
+- 주어진  ```timer_sleep()``` 함수는 busy waiting algorithm을 채택하고 있으므로 sleep/wake algorithm을 반영한 함수로 수정해야 한다. 구체적으로는 thread를 sleep queue에 삽입하는 역할을 하는 B.3.에 언급된 ```sleep()``` 함수를 ```timer_sleep()``` 함수 내부에서 호출해야 한다.
+- 주어진 ```timer_interrupt()``` 함수는 tick을 증가시키고 ```thread_tick()``` 함수를 호출한다. 하지만 이제는 tick마다 ```wake()``` 함수를 호출해  sleep queue에서 wake할 thread가 있는지 확인하고 있다면 그것을 sleep queue에서 삭제하고 ready queue로 보내는 기능을 추가해야한다.
+
+#### Algorithm
+
+- 기존의 loop 방식의 busy waiting에서 벗어나 sleep queue에 thread를 넣어놓고 때가 되면 sleep queue에서 다시 ready queue로 옮기는 방식을 도입한다.
+- ```timer_sleep()``` 함수를 호출하면 thread를 ready list에서 빼서 sleep queue에 삽입한다. timer interrupt가 발생할 때마다 tick을 체크하게 되는데, 이 과정 이후 sleep queue 내에서 충분한 시간이 지난 thread는 sleep list에서 제거해서 다시 ready list로 복귀시킨다.
+
+## 2. Priority scheduling
+
+### Current Implementation
 
 현재는 단순히 Rount-robin scheduling을 택하고 있다.
 
@@ -515,9 +558,9 @@ schedule (void)
 
 코드를 분석해보면 thread가 yield되면 `list_push_back` 을 하고, 다음으로 실행할 thread는 `list_pop_front`를 해서 정하는, queue 구조를 취하고 있음을 확인할 수 있다.
 
-#### New Implementation
+### New Implementation
 
-##### Tests
+#### Tests
 
 통과해야 하는 test들은 다음과 같다.
 
@@ -561,13 +604,13 @@ schedule (void)
 - **priority-donate-sema**
   : Low priority thread L acquires a lock, then blocks downing a semaphore.  Medium priority thread M then blocks waiting on the same semaphore.  Next, high priority thread H attempts to acquire the lock, donating its priority to L. Next, the main thread ups the semaphore, waking up L.  L releases the lock, which wakes up H.  H "up"s the semaphore, waking up M.  H terminates, then M, then L, and finally the main thread.
 
-##### Priority scheduling
+#### Priority scheduling
 
-###### Data Structure
+##### Data Structure
 
 scheduling을 위해서 별도로 멤버를 추가줄 필요는 없다.
 
-###### Create
+##### Create
 
 ```c++
 /**
@@ -578,7 +621,7 @@ scheduling을 위해서 별도로 멤버를 추가줄 필요는 없다.
 bool priority_compare(struct list_elem* a, struct list_elem* b, void* aux){}
 ```
 
-###### Change
+##### Change
 
 - `thread_yield()`, `thread_unblock()`
   
@@ -601,7 +644,7 @@ bool priority_compare(struct list_elem* a, struct list_elem* b, void* aux){}
   }
   ```
 
-###### Algorithm 
+##### Algorithm 
 
 priority 순서로 thread를 선택하기 위해, ready_list에 priority 순으로 thread를 추가하도록 한다.
 
@@ -620,9 +663,9 @@ list_insert_ordered(&ready_list, &cur->elem, priority_compare, NULL);
   
 이므로, 각각의 경우에 맞추어 `thread_yield()`를 호출해준다.
 
-##### Priority donation
+#### Priority donation
 
-###### Data Structure
+##### Data Structure
 
 ```c++
 struct lock 
@@ -642,7 +685,7 @@ struct thread
   }
 ```
 
-###### Create
+##### Create
 
 문법 상관없이 수도코드처럼 썼습니다.
 
@@ -714,7 +757,7 @@ int thread_set_priority(int new_priority){
 }
 ```
 
-###### Change
+##### Change
 
 - `lock_aquire()`
   ```c++
@@ -774,7 +817,7 @@ int thread_set_priority(int new_priority){
   }
   ```
 
-###### Algorithm 
+##### Algorithm 
 
 알고리즘은 크게 4가지의 흐름으로 나눌 수 있다.
 
@@ -802,8 +845,8 @@ int thread_set_priority(int new_priority){
 
   그리고 선택된 thread는 donator list에서 삭제한다.
 
-### 3. Advanced scheduler
+## 3. Advanced scheduler
 
-#### Current Implementation
+### Current Implementation
 
-#### New Implementation
+### New Implementation
