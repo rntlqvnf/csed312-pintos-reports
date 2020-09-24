@@ -378,4 +378,142 @@ cond_broadcast (struct condition *cond, struct lock *lock)
 
 ### 2. Priority scheduling
 
+#### Current Implementation
+
+현재는 단순히 Rount-robin scheduling을 택하고 있다.
+
+```c++
+void
+thread_yield (void) 
+{
+  struct thread *cur = thread_current ();
+  enum intr_level old_level;
+  
+  ASSERT (!intr_context ());
+
+  old_level = intr_disable ();
+  if (cur != idle_thread) 
+    list_push_back (&ready_list, &cur->elem);
+  cur->status = THREAD_READY;
+  schedule ();
+  intr_set_level (old_level);
+}
+```
+
+```c++
+static struct thread *
+next_thread_to_run (void) 
+{
+  if (list_empty (&ready_list))
+    return idle_thread;
+  else
+    return list_entry (list_pop_front (&ready_list), struct thread, elem);
+}
+```
+
+```c++
+static void
+schedule (void) 
+{
+  struct thread *cur = running_thread ();
+  struct thread *next = next_thread_to_run ();
+  struct thread *prev = NULL;
+
+  ASSERT (intr_get_level () == INTR_OFF);
+  ASSERT (cur->status != THREAD_RUNNING);
+  ASSERT (is_thread (next));
+
+  if (cur != next)
+    prev = switch_threads (cur, next);
+  thread_schedule_tail (prev);
+}
+
+```
+
+구현은 ready_list를 circular FIFO queue로 구현하는 것이 핵심이다.
+
+코드를 분석해보면 thread가 yield되면 `list_push_back` 을 하고, 다음으로 실행할 thread는 `list_pop_front`를 해서 정하는, queue 구조를 취하고 있음을 확인할 수 있다.
+
+#### New Implementation
+
+##### Tests
+
+통과해야 하는 test들은 다음과 같다.
+
+- priority-change
+- priority-donate-one
+- priority-donate-multiple
+- priority-donate-multiple2
+- priority-donate-chain
+- priority-donate-nest
+- priority-donate-sema
+- priority-fifo
+- priority-preempt
+- priority-sema
+- priority-condvar
+- priority-fifo
+
+##### Priority scheduling
+
+###### Data Structure
+
+scheduling을 위해서 별도로 멤버를 추가줄 필요는 없다.
+
+###### Create
+
+```c++
+/**
+* In thread.c
+* comparator function, signature of typedef list_less_func
+* @return a's priority >? b's priority
+*/
+bool priority_compare(struct list_elem* a, struct list_elem* b, void* aux){}
+```
+
+###### Change
+
+- **Modify** `thread_yield()`, `thread_unblock()`
+  
+  : `list_push_back (&ready_list, &cur->elem)` -> `list_insert_ordered(&ready_list, &cur->elem, priority_compare, NULL);`
+
+- **Add** `thread_create()`
+
+  ```c++
+  {
+    if(newThread.priority > currentThread.priority)
+      thread_yield();
+  }
+  ```
+
+- **Add** `thread_set_priority()`
+  ```c++
+  {
+    if(newPriority < currentPriority)
+      thread_yield();
+  }
+  ```
+
+###### Algorithm 
+
+priority 순서로 thread를 선택하기 위해, ready_list에 priority 순으로 thread를 추가하도록 한다.
+
+```c++
+list_insert_ordered(&ready_list, &cur->elem, priority_compare, NULL);
+```
+
+`priority_compare()`를 사용하여 priority 순서대로 ready_list에 집어넣는 구문이다.
+
+`thread_yield()`, `thread_unblock()` 의 `list_push_back (&ready_list, &cur->elem)`를 이 구문으로 대체한다.
+
+그리고 scheduling을 다시 해야 하는 시점은 
+
+- 새로 만들어진 thread가 priroity가 현재보다 높아짐
+- priority가 이전보다 작아지게 set 됨
+  
+이므로, 각각의 경우에 맞추어 `thread_yield()`를 호출해준다.
+
+##### Priority donation
+
+
+
 ### 3. Advanced scheduler
