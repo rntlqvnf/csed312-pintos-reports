@@ -504,7 +504,7 @@ void timer_sleep (int64_t ticks)
 
 ### Current Implementation
 
-현재는 단순히 Rount-robin scheduling을 택하고 있다.
+현재는 단순히 Round Robin scheduling을 택하고 있다.
 
 ```c++
 void
@@ -850,3 +850,28 @@ int thread_set_priority(int new_priority){
 ### Current Implementation
 
 ### New Implementation
+
+#### Tests
+
+- mlfqs-load-1
+  : Verifies that a single busy thread raises the load average to 0.5 in 38 to 45 seconds.  The expected time is 42 seconds, as you can verify: perl -e '$i++,$a=(59*$a+1)/60while$a<=.5;print "$in"' Then, verifies that 10 seconds of inactivity drop the load average back below 0.5 again.
+ 
+- mlfqs-load-60
+  : Starts 60 threads that each sleep for 10 seconds, then spin in a tight loop for 60 seconds, and sleep for another 60 seconds. Every 2 seconds after the initial sleep, the main thread prints the load average.
+ 
+- mlfqs-load-avg
+  : Starts 60 threads numbered 0 through 59.  Thread #i sleeps for (10+i) seconds, then spins in a loop for 60 seconds, then sleeps until a total of 120 seconds have passed. Every 2 seconds, starting 10 seconds in, the main thread prints the load average.
+ 
+- mlfqs-recent-1 
+  : Checks that recent_cpu is calculated properly for the case of a single ready process.
+
+- mlfqs-fair-2
+- mlfqs-fair-20
+  : Measures the correctness of the "nice" implementation. The "fair" tests run either 2 or 20 threads all niced to 0. The threads should all receive approximately the same number of ticks.  Each test runs for 30 seconds, so the ticks should also sum to approximately 30 * 100 == 3000 ticks. The mlfqs-nice-2 test runs 2 threads, one with nice 0, the other with nice 5, which should receive 1,904 and 1,096 ticks, respectively, over 30 seconds.The mlfqs-nice-10 test runs 10 threads with nice 0 through 9. They should receive 672, 588, 492, 408, 316, 232, 152, 92, 40, and 8 ticks respectively, over 30 seconds.
+
+- mlfqs-nice-2
+- mlfqs-nice-10
+  
+- mlfqs-block
+  : Checks that recent_cpu and priorities are updated for blocked threads. The main thread sleeps for 25 seconds, spins for 5 seconds, then releases a lock.  The "block" thread spins for 20 seconds then attempts to acquire the lock, which will block for 10 seconds (until the main thread releases it).  If recent_cpu decays properly while the "block" thread sleeps, then the block thread should be immediately scheduled when the main thread releases the lock.
+ 
