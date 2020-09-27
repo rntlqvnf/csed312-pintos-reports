@@ -470,9 +470,13 @@ void timer_sleep (int64_t ticks)
 }
 ```
 
-- ```devices/timer.c```에 정의되어 있는  ```timer_sleep()``` 함수를 reimplement하는 것이 목표이다.
-- Pintos에서 기본으로 제공되는 working implementation은 루프 내에서 current time을 확인하다가 충분히 긴 시간이 지나면 ```thread_yield()```를 호출하는 busy waiting 방식을 채택한다. 앞서 말한 reimplement의 목적은 busy waiting이 일어나지 않도록 하는 것이다.
-- 아래 함수 ```timer_sleep()```는 calling thread의 실행을 시간이 x timer tick 이상 지날 때까지 중단하는 역할을 한다. system이 idle하지 않은 이상 thread가 정확히 x ticks 이후에 일어날 필요는 없다. 따라서 x ticks 이상 지났을 때 이 함수는 ```thread_yield()``` 함수를 이용해 thread를 ready queue에 넣어주기만 하면 된다.
+`timer_sleep()`는 calling thread를 x timer tick 이상 시간이 지날 때 중단하는 역할을 한다. 
+
+system이 idle하지 않은 이상 thread가 정확히 x ticks 이후에 일어날 필요는 없다.
+
+현재는 루프 내에서 current time을 확인하다가 충분히 긴 시간이 지나면 `thread_yield()`를 호출하는 **busy waiting** 방식을 채택하고 있다.
+
+이러한 busy waiting은 매 tick마다 체킹을 하므로 cpu 점유율이 상당히 높아 비효율적이다.
 
 ### New Implementation
 
@@ -480,25 +484,99 @@ void timer_sleep (int64_t ticks)
 
 #### Data structure
 
-- ```struct thread```에 tick(얼마나 있다가 wake 해야 하는지)을 저장할 member을 추가해야 한다.
-- ready queue 이외에 새로운 list인 sleep queue가 필요하게 됐으니 그 자료구조를 추가해야 한다. 이때 sleep queue의 자료구조는 priority queue와 비슷한 형태로, priority는 tick을 기준으로 한다.
+```c++
+/**
+* member which indicates expire time(tick) of thread
+*/
+struct thread
+  {
+    ...
+    int expire_tick
+  }
+```
+
+```c++
+/**
+* Priority queue of thread (sorted by expire_tick)
+*/
+struct list sleep_list
+```
 
 #### Create
 
-- thread를 ready queue에서 sleep queue로 옮겨주는 ```sleep()``` 함수를 추가해야 한다. 구체적으로 ```sleep()``` 함수는 현재 thread가 idle이 아닐 때 state를 BLOCKED로 바꾸고 sleep queue에 추가한다.
-- thread를 sleep queue에서 깨워서 다시 ready queue로 옮겨주는 ```wake()``` 함수를 추가해야 한다. 구체적으로 ```wake()``` 함수는 sleep queue의 모든 원소를 순회하며 wake해야 할 thread를 sleep queue에서 제거해 ready queue로 옮겨주는 기능을 해야 한다.
-- sleep queue의 thread가 갖고 있는 남은 tick 값을 tick마다 감소시켜주는 ```update()``` 함수를 추가해야 한다.
+```c++
+/**
+* In timer.c
+* comparator function, signature of typedef list_less_func
+* @return a's expire_tick >? b's expire_tick
+*/
+bool tick_compare(struct list_elem* a, struct list_elem* b, void* aux){}
+```
+
+```c++
+/**
+* In timer.c
+* Make thread sleep
+* Works only if thread not idle
+* change thread's state into BLOCKED
+* move thread from ready_list to sleep_list
+*/
+void thread_sleep(){}
+```
+
+```c++
+/**
+* In timer.c
+* Make threads wake up
+* iterate all sleep list
+* if thread have to wake up then
+* change thread's state into READY
+* move thread from sleep_list to ready_list
+*/
+void thread_wakeup(){}
+```
 
 #### Change
 
-- 주어진  ```thread_init()``` 함수는 ready queue만을 초기화 하고 있으므로 새로 추가된 data structure인 sleep queue를 초기화해주는 역할이 추가되어야 한다.
-- 주어진  ```timer_sleep()``` 함수는 busy waiting algorithm을 채택하고 있으므로 sleep/wake algorithm을 반영한 함수로 수정해야 한다. 구체적으로는 thread를 sleep queue에 삽입하는 역할을 하는 B.3.에 언급된 ```sleep()``` 함수를 ```timer_sleep()``` 함수 내부에서 호출해야 한다.
-- 주어진 ```timer_interrupt()``` 함수는 tick을 증가시키고 ```thread_tick()``` 함수를 호출한다. 하지만 이제는 tick마다 ```wake()``` 함수를 호출해  sleep queue에서 wake할 thread가 있는지 확인하고 있다면 그것을 sleep queue에서 삭제하고 ready queue로 보내는 기능을 추가해야한다.
+- `thread_init()`
+  ```c++
+  {
+    ...
+    list_init(&sleep_list);
+  }
+  ```
+
+- `timer_sleep()`
+  ```c++
+  {
+    /*
+      while (timer_elapsed (start) < ticks) 
+        thread_yield ();
+    */
+    thread_sleep();
+  }
+  ```
+
+- `timer_interrupt()`
+  ```c++
+  {
+    ticks++;
+    /*
+      thread_tick ();
+    */
+    thread_wakeup();
+  }
+  ```
 
 #### Algorithm
 
-- 기존의 loop 방식의 busy waiting에서 벗어나 sleep queue에 thread를 넣어놓고 때가 되면 sleep queue에서 다시 ready queue로 옮기는 방식을 도입한다.
-- ```timer_sleep()``` 함수를 호출하면 thread를 ready list에서 빼서 sleep queue에 삽입한다. timer interrupt가 발생할 때마다 tick을 체크하게 되는데, 이 과정 이후 sleep queue 내에서 충분한 시간이 지난 thread는 sleep list에서 제거해서 다시 ready list로 복귀시킨다.
+sleep 하는 thread들을 모아두는 역할을 하는 sleep list(priority queue)를 도입한다.
+
+`timer_sleep()` 함수가 이 sleep list에 thread를 삽입하는 역할을 한다.
+
+이 함수는 현재 thread의 expire tick을 계산한 다음, block 시키고 ready list에서 sleep list로 thread를 옮긴다. 
+
+이후 timer interrupt가 발생할 때마다 `timer_interrup()`에서 tick을 체크하며 sleep list에서 충분한 시간이 지난 thread를 unblock 시키며 다시 ready list로 옮긴다.
 
 ## 2. Priority scheduling
 
@@ -848,6 +926,8 @@ int thread_set_priority(int new_priority){
 ## 3. Advanced scheduler
 
 ### Current Implementation
+
+
 
 ### New Implementation
 
