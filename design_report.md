@@ -37,6 +37,7 @@ struct thread
 
 - `elem`는 중의적인 역할을 띠고 있는데, 하나는 run queue에서의 element로서의 역할, 다른 하나는 semaphore wait list에서의 element로서의 역할이다. elem이 이런 두 가지의 역할을 할 수 있는 것은 그 두 역할이 mutually exclusive하기 때문이다. 만약 thread가 ready state에 있다면 그것은 run queue에 있을 것이고, blocked state에 있다면 semaphore wait list에 있을 것이다.
   
+
 모든 thread structure은 각자 4kB page를 차지한다. 위의 코드에서 보이는 구조체 내 원소들은(structure 자체는) page offset 0에 저장되고, 나머지 page는 offset 4kB(top of the page)로부터 시작해서 아래쪽으로 자라는, thread의 kernel stack에 위치하게 된다. 
 
 ## Initializing threading system
@@ -63,7 +64,7 @@ void thread_init (void)
 기본적으로 현재 돌아가고 있는 code를 thread로 transforming하는 것이다.
 
 구체적으론 run queue와 tid lock을 initializing하며, 이 함수를 호출한 이후에는 아래에서 다룰 ` thread_create() ` 함수를 이용해 thread를 생성하기 전에 page allocator를 initialize해야만 한다.
- 
+
 ## Thread creation
 
 ```c++
@@ -500,6 +501,10 @@ system이 idle하지 않은 이상 thread가 정확히 x ticks 이후에 일어�
 
 #### Data structure
 
+- `struct thread`:
+
+  tick(얼마나 있다가 wake 해야 하는지)을 저장할 member을 추가해야 한다
+
 ```c++
 /**
 * member which indicates expire time(tick) of thread
@@ -510,6 +515,10 @@ struct thread
     int expire_tick
   }
 ```
+
+- `struct list` :
+
+  ready queue 이외에 새로운 list인 sleep queue가 필요하게 됐으니 그 자료구조를 추가해야 한다. 이때 sleep queue의 자료구조는 priority queue와 비슷한 형태로, priority는 expired tick을 기준으로 한다.
 
 ```c++
 /**
@@ -529,6 +538,10 @@ struct list sleep_list
 bool tick_compare(struct list_elem* a, struct list_elem* b, void* aux){}
 ```
 
+- `thread_sleep()` :
+
+  thread를 ready queue에서 sleep queue로 옮겨주는 ```thread_sleep()``` 함수를 추가해야 한다. 구체적으로 `thread_sleep()` 함수는 현재 thread가 idle이 아닐 때 state를 BLOCKED로 바꾸고 sleep queue에 추가한다.
+
 ```c++
 /**
 * In timer.c
@@ -539,6 +552,10 @@ bool tick_compare(struct list_elem* a, struct list_elem* b, void* aux){}
 */
 void thread_sleep(){}
 ```
+
+- `thread_wakeup()`:
+
+  thread를 sleep queue에서 깨워서 다시 ready queue로 옮겨주는 ```thread_wakeup()``` 함수를 추가해야 한다. 구체적으로 ```thread_wakeup()``` 함수는 sleep queue의 모든 원소를 순회하며 wake해야 할 thread를 sleep queue에서 제거해 ready queue로 옮겨주는 기능을 해야 한다.
 
 ```c++
 /**
@@ -554,26 +571,35 @@ void thread_wakeup(){}
 
 #### Change
 
-- `thread_init()`
+- `thread_init()` :
+  
+  주어진  ```thread_init()``` 함수는 ready queue만을 초기화 하고 있으므로 새로 추가된 data structure인 sleep queue를 초기화해주는 역할이 추가되어야 한다.
+  
   ```c++
   {
     ...
-    list_init(&sleep_list);
+  list_init(&sleep_list);
   }
   ```
-
-- `timer_sleep()`
+  
+- `timer_sleep()` :
+  
+  주어진  ```timer_sleep()``` 함수는 busy waiting algorithm을 채택하고 있으므로 sleep/wake algorithm을 반영한 함수로 수정해야 한다. 구체적으로는 thread를 sleep queue에 삽입하는 역할을 하는 위에 언급된 ```thread_sleep()``` 함수를 ```timer_sleep()``` 함수 내부에서 호출해야 한다.
+  
   ```c++
   {
     /*
       while (timer_elapsed (start) < ticks) 
         thread_yield ();
     */
-    thread_sleep();
+  thread_sleep();
   }
   ```
-
-- `timer_interrupt()`
+  
+- `timer_interrupt()` :
+  
+  주어진 ```timer_interrupt()``` 함수는 tick을 증가시키고 ```thread_tick()``` 함수를 호출한다. 하지만 이제는 tick마다 ```thread_wakeup()``` 함수를 호출해  sleep queue에서 wake할 thread가 있는지 확인하고 있다면 그것을 sleep queue에서 삭제하고 ready queue로 보내는 기능을 추가해야한다.
+  
   ```c++
   {
     ticks++;
@@ -691,10 +717,10 @@ schedule (void)
   After threads[1..7] have been created and are blocked on locks[0..7], the main thread releases lock[0], unblocking thread[1], and being preempted by it/
   Thread[1] then completes acquiring lock[0], then releases lock[0], then releases lock[1], unblocking thread[2], etc.
   Thread[7] finally acquires & releases lock[7] and exits, allowing thread[6], then thread[5] etc. to run and exit until finally the main thread exits.
- 
+
 - **priority-donate-nest**
   : Low-priority main thread L acquires lock A.  Medium-priority thread M then acquires lock B then blocks on acquiring lock A.  High-priority thread H then blocks on acquiring lock B.  Thus,thread H donates its priority to M, which in turn donates itto thread L.
- 
+
 - **priority-donate-sema**
   : Low priority thread L acquires a lock, then blocks downing a semaphore.  Medium priority thread M then blocks waiting on the same semaphore.  Next, high priority thread H attempts to acquire the lock, donating its priority to L. Next, the main thread ups the semaphore, waking up L.  L releases the lock, which wakes up H.  H "up"s the semaphore, waking up M.  H terminates, then M, then L, and finally the main thread.
 
@@ -755,6 +781,7 @@ list_insert_ordered(&ready_list, &cur->elem, priority_compare, NULL);
 - 새로 만들어진 thread가 priroity가 현재보다 높아짐
 - priority가 이전보다 작아지게 set 됨
   
+
 이므로, 각각의 경우에 맞추어 `thread_yield()`를 호출해준다.
 
 #### Priority donation
@@ -953,25 +980,174 @@ command-line option으로 `-mlfqs`를 주면, `extern bool thread_mlfqs`가 true
 
 - **mlfqs-load-1**
   : Verifies that a single busy thread raises the load average to 0.5 in 38 to 45 seconds.  The expected time is 42 seconds, as you can verify: perl -e '$i++,$a=(59*$a+1)/60while$a<=.5;print "$in"' Then, verifies that 10 seconds of inactivity drop the load average back below 0.5 again.
- 
 - **mlfqs-load-60**
   : Starts 60 threads that each sleep for 10 seconds, then spin in a tight loop for 60 seconds, and sleep for another 60 seconds. Every 2 seconds after the initial sleep, the main thread prints the load average.
- 
 - **mlfqs-load-avg**
   : Starts 60 threads numbered 0 through 59.  Thread #i sleeps for (10+i) seconds, then spins in a loop for 60 seconds, then sleeps until a total of 120 seconds have passed. Every 2 seconds, starting 10 seconds in, the main thread prints the load average.
- 
 - **mlfqs-recent-1**
   : Checks that recent_cpu is calculated properly for the case of a single ready process.
-
 - **mlfqs-fair-2**
-  
 - **mlfqs-fair-20**
   : Measures the correctness of the "nice" implementation. The "fair" tests run either 2 or 20 threads all niced to 0. The threads should all receive approximately the same number of ticks.  Each test runs for 30 seconds, so the ticks should also sum to approximately 30 * 100 == 3000 ticks. The mlfqs-nice-2 test runs 2 threads, one with nice 0, the other with nice 5, which should receive 1,904 and 1,096 ticks, respectively, over 30 seconds.The mlfqs-nice-10 test runs 10 threads with nice 0 through 9. They should receive 672, 588, 492, 408, 316, 232, 152, 92, 40, and 8 ticks respectively, over 30 seconds.
-
 - **mlfqs-nice-2**
-  
 - **mlfqs-nice-10**
-  
 - **mlfqs-block**
   : Checks that recent_cpu and priorities are updated for blocked threads. The main thread sleeps for 25 seconds, spins for 5 seconds, then releases a lock.  The "block" thread spins for 20 seconds then attempts to acquire the lock, which will block for 10 seconds (until the main thread releases it).  If recent_cpu decays properly while the "block" thread sleeps, then the block thread should be immediately scheduled when the main thread releases the lock.
- 
+
+
+
+#### Data Structure
+
+- `struct thread` :
+
+   `struct thread`에 nice와 recent_cpu 멤버가 추가되어야 한다. 
+
+  nice는 -20~+20 사이의 값을 가지며, nice 값이 0이면 priority에 영향을 주지 않고, nice가 양수면 priority를 감소시키며, nice가 음수면 priority를 증가시킨다. nice는 initially 0을 값으로 갖는다.
+
+  recent_cpu는 이 프로세스가 최근에 cpu를 얼마나 오랫동안 점유하고 있었는지를 나타내는 멤버이다. initial thread는 recent_cpu의 초기값으로 0을 가지며, 다른 thread들은 부모의 recent_cpu 값을 초기값으로 갖는다.
+
+```c
+struct thread
+{
+  ...
+    int nice;
+  	int recent_cpu;
+  ...
+}
+```
+
+
+
+#### Create
+
+- `mlfqs_priority()` :
+
+  `mlfqs_priority()` 함수는 thread pointer t를 인자로 받아 recent_cpu와 nice 값을 고려해 t의 priority를 계산하는 함수이다.
+
+```c
+void mlfqs_priority (struct thread* t)
+{
+  /*check if this thread is idle
+  calculate priority of the thread*/
+}
+```
+
+
+
+- `mlfqs_recent_cpu()` :
+
+  `mlfqs_recent_cpu()` 함수는 thread pointer t를 인자로 받아 recent_cpu 값을 계산하는 함수이다.
+
+```c
+void mlfqs_recent_cpu(struct thread* t)
+{
+  /*check if this thread is idle
+  calculate recent_cpu of the thread*/
+}
+```
+
+
+
+- `mlfqs_load_avg()` :
+
+  `mlfqs_load_avg()` 함수는 load_avg 값을 계산하는 함수이다.
+
+```c
+void mlfqs_load_avg()
+{
+  /*
+  calculate load_avg
+  load_avg>=0
+  */
+}
+```
+
+
+
+- `mlfqs_increment()` :
+
+  `mlfqs_increment()` 함수는 recent_cpu의 값을 1만큼 증가시키는 역할을 한다.
+
+```c
+void mlfqs_increment()
+{
+  /*check if this thread is idle
+  increment recent_cpu*/
+}
+```
+
+
+
+- `thread_set_nice()` :
+
+  현재 thread의 nice 값을 변경한다. nice 값을 변경하고 나면 thread의 우선순위에 변화가 생기므로 다시 scheduling이 이루어져야 한다.
+
+  해당 함수가 nice 값을 변경하는 동안 interrupt는 disable되어야 한다.
+
+```c
+void thread_set_nice(int nice)
+{
+  /*
+  modifies current nice value of the thread
+  needs to inactivate interrupt during the process
+  */
+}
+```
+
+
+
+- `mlfqs_recalc()` :
+
+  모든 thread의 recent_cpu와 priority를 다시 계산한다. `timer_interrupt()` 함수에 의해 호출된다.
+
+```c
+void mlfqs_recalc()
+{
+  /*
+  recalculate recent_cpu and priority of all threads
+  */
+}
+```
+
+
+
+#### Change
+
+- `init_thread()` :
+
+  data structure에 변화가 생겨 nice와 recent_cpu member가 추가되었으니 그것들을 초기화하는 연산이 `init_thread()`에 추가되어야 한다.
+
+```c
+static void init_thread (struct thread *t, const char *name, int priority)
+{
+	...
+		t->nice = NICE_DEFAULT;
+		t->recent_cpu = RECENT_CPU_DEFAULT;
+  ...
+}
+```
+
+
+
+- `thread_set_priority()`:
+
+  위에서 소개된 `thread_set_priority()` 함수는 priority를 임의로 설정할 수 있는 함수였다. 하지만 mlfqs scheduler를 사용하는 동안은 priority를 임의로 설정할 수 없도록 수정해야 한다. 따라서 thread_mlfqs 변수를 추가해서 그 변수가 true일 동안에는  `thread_set_priority()` 함수가 작동하지 못하도록 해야한다.
+
+  
+
+- `timer_interrupt()` :
+
+  1초마다 모든 thread의 recent_cpu와 priority를 recalculate할 수 있도록 수정해야 한다. 그리고 `timer_interrupt()`가 발생할 때마다 recent_cpu 값이 1 증가해야 한다.
+
+- `lock_acquire()` , `lock_release()` :
+
+  위에서 다루었던 `lock_acquire()` , `lock_release()` 함수에 의한 priority donation이 mlfqs scheduler을 사용할 때에는 disable 되어야 한다. 방법은 위의 `thread_set_priority()` 함수에서 priority setting을 막는 방법과 같은 방법을 사용한다.
+
+  
+
+#### Algorithm
+
+- priority scheduler와 같이 advanced scheduler는 priority를 기반으로 scheduling을 한다. 그러나 priority scheduler와는 달리 advanced scheduler는 priority donation을 하지 않는다.
+- default로 priority scheduler는 반드시 active된 상태여야 한다.
+- advanced scheduler도 priority scheduler와 같이 priority 값이 클수록 우선 순위에 놓이게 된다. 모든 thread는 1초마다 priority를 recalculate하게 되며, current thread는 4 ticks마다 priority를 recalculate한다. 
+
