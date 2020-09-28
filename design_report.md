@@ -743,9 +743,8 @@ bool priority_compare(struct list_elem* a, struct list_elem* b, void* aux){}
 
 ##### Change
 
-- `thread_yield()`, `thread_unblock()`
-  
-  : `list_push_back (&ready_list, &cur->elem)` -> `list_insert_ordered(&ready_list, &cur->elem, priority_compare, NULL);`
+- `thread_yield()`, `thread_unblock()` : 
+  `list_push_back (&ready_list, &cur->elem)` -> `list_insert_ordered(&ready_list, &cur->elem, priority_compare, NULL);`
 
 - `thread_create()`
 
@@ -994,122 +993,98 @@ command-line option으로 `-mlfqs`를 주면, `extern bool thread_mlfqs`가 true
 - **mlfqs-block**
   : Checks that recent_cpu and priorities are updated for blocked threads. The main thread sleeps for 25 seconds, spins for 5 seconds, then releases a lock.  The "block" thread spins for 20 seconds then attempts to acquire the lock, which will block for 10 seconds (until the main thread releases it).  If recent_cpu decays properly while the "block" thread sleeps, then the block thread should be immediately scheduled when the main thread releases the lock.
 
-
-
 #### Data Structure
 
-- `struct thread` :
-
-   `struct thread`에 nice와 recent_cpu 멤버가 추가되어야 한다. 
-
-  nice는 -20~+20 사이의 값을 가지며, nice 값이 0이면 priority에 영향을 주지 않고, nice가 양수면 priority를 감소시키며, nice가 음수면 priority를 증가시킨다. nice는 initially 0을 값으로 갖는다.
-
-  recent_cpu는 이 프로세스가 최근에 cpu를 얼마나 오랫동안 점유하고 있었는지를 나타내는 멤버이다. initial thread는 recent_cpu의 초기값으로 0을 가지며, 다른 thread들은 부모의 recent_cpu 값을 초기값으로 갖는다.
-
-```c
-struct thread
-{
-  ...
+- `struct thread` 
+  ```c++
+  struct thread
+  {
+    ...
     int nice;
-  	int recent_cpu;
-  ...
-}
-```
+    int recent_cpu;
+  }
+  ```
+  - `nice`: -20~+20 사이의 값을 가지며, nice 값이 0이면 priority에 영향을 주지 않고, nice가 양수면 priority를 감소시키며, nice가 음수면 priority를 증가시킨다. nice는 initially 0을 값으로 갖는다.
 
-
+  - `recent_cpu`: 이 프로세스가 최근에 cpu를 얼마나 오랫동안 점유하고 있었는지를 나타내는 멤버이다. initial thread는 recent_cpu의 초기값으로 0을 가지며, 다른 thread들은 부모의 recent_cpu 값을 초기값으로 갖는다.
 
 #### Create
 
-- `mlfqs_priority()` :
+- `mlfqs_priority()` : 
+    
+    thread pointer t를 인자로 받아 recent_cpu와 nice 값을 고려해 t의 priority를 계산하는 함수이다.
 
-  `mlfqs_priority()` 함수는 thread pointer t를 인자로 받아 recent_cpu와 nice 값을 고려해 t의 priority를 계산하는 함수이다.
-
-```c
-void mlfqs_priority (struct thread* t)
-{
-  /*check if this thread is idle
-  calculate priority of the thread*/
-}
-```
-
-
+  ```c++
+  /**
+  check if this thread is idle
+  calculating priority of the thread
+  @param struct thread
+  */
+  void mlfqs_priority (struct thread* t)
+  ```
 
 - `mlfqs_recent_cpu()` :
 
-  `mlfqs_recent_cpu()` 함수는 thread pointer t를 인자로 받아 recent_cpu 값을 계산하는 함수이다.
+    thread pointer t를 인자로 받아 recent_cpu 값을 계산하는 함수이다.
 
-```c
-void mlfqs_recent_cpu(struct thread* t)
-{
-  /*check if this thread is idle
-  calculate recent_cpu of the thread*/
-}
-```
-
-
+  ```c++
+  /**
+  check if this thread is idle
+  calculate recent_cpu of the thread*
+  @param struct thread
+  */
+  void mlfqs_recent_cpu(struct thread* t)
+  ```
 
 - `mlfqs_load_avg()` :
 
-  `mlfqs_load_avg()` 함수는 load_avg 값을 계산하는 함수이다.
+    함수는 load_avg 값을 계산하는 함수이다.
 
-```c
-void mlfqs_load_avg()
-{
-  /*
+  ```c++
+  /**
   calculate load_avg
   load_avg>=0
   */
-}
-```
-
-
+  void mlfqs_load_avg()
+  ```
 
 - `mlfqs_increment()` :
 
-  `mlfqs_increment()` 함수는 recent_cpu의 값을 1만큼 증가시키는 역할을 한다.
+   recent_cpu의 값을 1만큼 증가시키는 역할을 한다.
 
-```c
-void mlfqs_increment()
-{
-  /*check if this thread is idle
-  increment recent_cpu*/
-}
-```
-
-
+  ```c++
+  /**
+  check if this thread is idle
+  increment recent_cpu
+  */
+  void mlfqs_increment()
+  ```
 
 - `thread_set_nice()` :
 
-  현재 thread의 nice 값을 변경한다. nice 값을 변경하고 나면 thread의 우선순위에 변화가 생기므로 다시 scheduling이 이루어져야 한다.
+    현재 thread의 nice 값을 변경한다. nice 값을 변경하고 나면 thread의 우선순위에 변화가 생기므로 다시 scheduling이 이루어져야 한다.
 
-  해당 함수가 nice 값을 변경하는 동안 interrupt는 disable되어야 한다.
+    해당 함수가 nice 값을 변경하는 동안 interrupt는 disable되어야 한다.
 
-```c
-void thread_set_nice(int nice)
-{
-  /*
+  ```c++
+  /**
   modifies current nice value of the thread
   needs to inactivate interrupt during the process
+  @param nice value
   */
-}
-```
-
-
+  void thread_set_nice(int nice)
+  ```
 
 - `mlfqs_recalc()` :
 
-  모든 thread의 recent_cpu와 priority를 다시 계산한다. `timer_interrupt()` 함수에 의해 호출된다.
+    모든 thread의 recent_cpu와 priority를 다시 계산한다. `timer_interrupt()` 함수에 의해 호출된다.
 
-```c
-void mlfqs_recalc()
-{
-  /*
+  ```c++
+  /**
   recalculate recent_cpu and priority of all threads
   */
-}
-```
-
-
+  void mlfqs_recalc()
+  ```
 
 #### Change
 
@@ -1117,37 +1092,45 @@ void mlfqs_recalc()
 
   data structure에 변화가 생겨 nice와 recent_cpu member가 추가되었으니 그것들을 초기화하는 연산이 `init_thread()`에 추가되어야 한다.
 
-```c
-static void init_thread (struct thread *t, const char *name, int priority)
-{
-	...
-		t->nice = NICE_DEFAULT;
-		t->recent_cpu = RECENT_CPU_DEFAULT;
-  ...
-}
-```
-
-
+  ```c++
+  static void init_thread (struct thread *t, const char *name, int priority)
+  {
+    ...
+      t->nice = NICE_DEFAULT;
+      t->recent_cpu = RECENT_CPU_DEFAULT;
+    ...
+  }
+  ```
 
 - `thread_set_priority()`:
 
-  위에서 소개된 `thread_set_priority()` 함수는 priority를 임의로 설정할 수 있는 함수였다. 하지만 mlfqs scheduler를 사용하는 동안은 priority를 임의로 설정할 수 없도록 수정해야 한다. 따라서 thread_mlfqs 변수를 추가해서 그 변수가 true일 동안에는  `thread_set_priority()` 함수가 작동하지 못하도록 해야한다.
-
+  위에서 소개된 `thread_set_priority()` 함수는 priority를 임의로 설정할 수 있는 함수였다. 
   
+  하지만 mlfqs scheduler를 사용하는 동안은 priority를 임의로 설정할 수 없도록 수정해야 한다. 
+  
+  따라서 thread_mlfqs 변수를 추가해서 그 변수가 true일 동안에는  `thread_set_priority()` 함수가 작동하지 못하도록 해야한다.
 
 - `timer_interrupt()` :
 
-  1초마다 모든 thread의 recent_cpu와 priority를 recalculate할 수 있도록 수정해야 한다. 그리고 `timer_interrupt()`가 발생할 때마다 recent_cpu 값이 1 증가해야 한다.
+  1초마다 모든 thread의 recent_cpu와 priority를 recalculate할 수 있도록 수정해야 한다.
+  
+  그리고 `timer_interrupt()`가 발생할 때마다 recent_cpu 값이 1 증가해야 한다.
 
 - `lock_acquire()` , `lock_release()` :
 
-  위에서 다루었던 `lock_acquire()` , `lock_release()` 함수에 의한 priority donation이 mlfqs scheduler을 사용할 때에는 disable 되어야 한다. 방법은 위의 `thread_set_priority()` 함수에서 priority setting을 막는 방법과 같은 방법을 사용한다.
-
+  위에서 다루었던 `lock_acquire()` , `lock_release()` 함수에 의한 priority donation이 mlfqs scheduler을 사용할 때에는 disable 되어야 한다. 
   
+  방법은 위의 `thread_set_priority()` 함수에서 priority setting을 막는 방법과 같은 방법을 사용한다.
 
 #### Algorithm
 
-- priority scheduler와 같이 advanced scheduler는 priority를 기반으로 scheduling을 한다. 그러나 priority scheduler와는 달리 advanced scheduler는 priority donation을 하지 않는다.
+- priority scheduler와 같이 advanced scheduler는 priority를 기반으로 scheduling을 한다.
+
+- priority scheduler와는 달리 advanced scheduler는 priority donation을 하지 않는다.
+
 - default로 priority scheduler는 반드시 active된 상태여야 한다.
-- advanced scheduler도 priority scheduler와 같이 priority 값이 클수록 우선 순위에 놓이게 된다. 모든 thread는 1초마다 priority를 recalculate하게 되며, current thread는 4 ticks마다 priority를 recalculate한다. 
+
+- advanced scheduler도 priority scheduler와 같이 priority 값이 클수록 우선 순위에 놓이게 된다. 
+  
+  모든 thread는 1초마다 priority를 recalculate하게 되며, current thread는 4 ticks마다 priority를 recalculate한다. 
 
