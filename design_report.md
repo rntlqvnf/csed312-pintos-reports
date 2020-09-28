@@ -943,7 +943,9 @@ int thread_set_priority(int new_priority){
 
 ### Current Implementation
 
+command-line option으로 `-mlfqs`를 주면, `extern bool thread_mlfqs`가 true가 되어, round robin에서 multi-level feedback queue shedular를 사용하도록 바뀐다.
 
+단, 현재로썬 `thread_mlfqs`에 상관없이 동일하게 동작하도록 되어있다.
 
 ### New Implementation
 
