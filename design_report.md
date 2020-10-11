@@ -771,7 +771,7 @@ priority 순서로 thread를 선택하기 위해, ready_list에 priority 순으�
 list_insert_ordered(&ready_list, &cur->elem, priority_compare, NULL);
 ```
 
-`priority_compare()`를 사용하여 priority 순서대로 ready_list에 집어넣는 구문이다.
+`priority_compare()`를 사용하여 priority 순서대로 ready_list에 집어넣는 구문이다. (주의할 점은 이게 less를 오버라이드 한다는 것. 그러니까 맨 뒤에 있는게 제일 크다)
 
 `thread_yield()`, `thread_unblock()` 의 `list_push_back (&ready_list, &cur->elem)`를 이 구문으로 대체한다. (우리가 신경써야 하는건 ready list니까. Block -> unblock 갈 때나 running에서 ready로 갈 때니까.)
 
@@ -780,7 +780,6 @@ list_insert_ordered(&ready_list, &cur->elem, priority_compare, NULL);
 - 새로 만들어진 thread가 priroity가 현재보다 높아짐
 - priority가 이전보다 작아지게 set 됨
   
-
 이므로, 각각의 경우에 맞추어 `thread_yield()`를 호출해준다.
 
 #### Priority donation
