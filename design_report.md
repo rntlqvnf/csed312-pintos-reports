@@ -773,7 +773,7 @@ list_insert_ordered(&ready_list, &cur->elem, priority_compare, NULL);
 
 `priority_compare()`를 사용하여 priority 순서대로 ready_list에 집어넣는 구문이다.
 
-`thread_yield()`, `thread_unblock()` 의 `list_push_back (&ready_list, &cur->elem)`를 이 구문으로 대체한다.
+`thread_yield()`, `thread_unblock()` 의 `list_push_back (&ready_list, &cur->elem)`를 이 구문으로 대체한다. (우리가 신경써야 하는건 ready list니까. Block -> unblock 갈 때나 running에서 ready로 갈 때니까.)
 
 그리고 scheduling을 다시 해야 하는 시점은 
 
