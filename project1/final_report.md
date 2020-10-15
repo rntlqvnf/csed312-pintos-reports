@@ -557,16 +557,247 @@ Inversion priority의 지배를 받고 있으므로 yield하면 안 되기 때�
 
 ### Control flow
 
+![mlfqs diagram](../assets/1/mlfqs_diagram.png)
+
 ### Implementation
 
+우선 `fixed_point.h` 파일을 helper function의 정의를 위해 새로 만들었다.
+
+```c
+int int_to_fp(int n);
+int fp_to_int_round(int x);
+int fp_to_int(int x);
+int add_fp(int x, int y);
+int add_mixed(int x, int n);
+int sub_fp(int x, int y);
+int sub_mixed(int x, int n);
+int mul_fp(int x, int y);
+int mul_mixed(int x, int y);
+int div_fp(int x, int y);
+int div_mixed(int x, int n);
+```
+
+`fixed_point.h` 에는 연산을 위한 helper function들이 정의되어 있는데, 이런 과정이 필요한 이유는 pintos가 float 형식을 감지하지 못하기 때문이다. 때문에 이 assignment에서 실수를 의미하는 모든 변수는 int 자료형에서 17.14 fixed-point number representation을 이용해 표현하게 된다. 그리고 `fixed_point.h` 는 그런 변수들을 적절하게 연산하게 도와준다.
+
+위에서 x, y는 실수를, n은 정수를 의미한다. 계산 방법은 다음과 같다.
+
+| Convert n to  fixed point:                    | n * f                                                    |
+| --------------------------------------------- | -------------------------------------------------------- |
+| Convert x to  integer (rounding toward zero): | x / f                                                    |
+| Convert x to  integer (rounding to nearest):  | (x + f / 2) / f if x >= 0,    (x - f / 2) / f if x <= 0. |
+| Add x and y:                                  | x + y                                                    |
+| Subtract y from x:                            | x - y                                                    |
+| Add x and n:                                  | x + n * f                                                |
+| Subtract n from x:                            | x - n * f                                                |
+| Multiply x by y:                              | ((int64_t) x) * y / f                                    |
+| Multiply x by n:                              | x * n                                                    |
+| Divide x by y:                                | ((int64_t) x) * f / y                                    |
+
+
+
+```c
+void mlfqs_priority(struct thread* t)
+{
+  if(t!=idle_thread)
+  {
+    t->priority = PRI_MAX - fp_to_int(div_mixed(t->recent_cpu,4)) - (t->nice * 2);
+    if (t->priority < PRI_MIN)
+      t->priority = PRI_MIN;
+    else if (t->priority > PRI_MAX)
+      t->priority = PRI_MAX;
+  }
+}
+```
+
+`mlfqs_priority()` 함수는 priority를 업데이트 해주는 함수이다. MLFQS에서 priority 계산 공식은 다음과 같다.
+
+`priority = PRI_MAX - (recent_cpu / 4) - (nice * 2)`
+
+이때 `recent_cpu`, `nice`는 실수값을 가진다는 것을 유의해야 한다.
+
+```c
+void mlfqs_recent_cpu(struct thread* t)
+{
+  if(t!=idle_thread)
+    t->recent_cpu = add_mixed(mul_fp(div_fp(mul_mixed(load_avg, 2), add_mixed(mul_mixed(load_avg, 2), 1)), t->recent_cpu), t->nice);
+}
+```
+
+`mlfqs_recent_cpu()`함수는 `recent_cpu`를 계산해준다. `recent_cpu`는 다음과 같은 값을 공식을 갖는다.
+
+`recent_cpu = (2*load_avg)/(2*load_avg + 1) * recent_cpu + nice`
+
+```c
+void mlfqs_load_avg(void)
+{
+  struct list_elem* e;
+  size_t ready_thread_cnt = list_size(&ready_list);
+  if (thread_current() != idle_thread)
+    ++ready_thread_cnt;
+      
+  load_avg = add_fp(div_mixed(mul_mixed(load_avg, 59), 60), div_mixed(int_to_fp(ready_thread_cnt), 60));
+}
+```
+
+`mlfqs_load_avg()`함수는 `load_avg`를 계산해준다. `load_avg`가 의미하는 바는 1분동안 수행 가능한 process의 평균 개수이다. 그 식은 다음과 같다.
+
+`load_avg = (59/60) * load_avg + (1/60) * ready_threads`
+
+여기에서 `ready_threads`가 의미하는 것은 running thread(idle thread인 경우 제외)와 ready_list 안에 들어있는 thread의 총 개수이다.
+
+```c
+void mlfqs_increment(void)
+{
+  if(thread_current() != idle_thread)
+    thread_current()->recent_cpu=add_mixed(thread_current()->recent_cpu, 1);
+}
+```
+
+`mlfqs_increment()`는 current thread의 `recent_cpu` 값을 1 증가시켜준다. 주의해야 할 점은 `recent_cpu` 값이 실수를 의미하기에 1을 단순히 더하면 안되고 (1<<14)를 더해줘야 한다는 것이다.
+
+```c
+void mlfqs_recalc(void)
+{
+  struct list_elem* e;
+  mlfqs_load_avg();
+  for(e=list_begin(&all_list); e != list_end(&all_list); e=list_next(e))
+  {
+    struct thread* t=list_entry(e, struct thread, allelem);
+    mlfqs_recent_cpu(t);
+    mlfqs_priority(t);
+  }
+}
+
+```
+
+`mlfqs_recalc()`는 전체 thread의 `recent_cpu`,`priority`, 그리고 `load_avg`를 업데이트 시켜준다. 이 함수는 뒤의 `timer_interrupt()`에서 사용된다.
+
+```c
+void mlfqs_recalc_priority(void)
+{
+  struct list_elem* e;
+  for(e=list_begin(&all_list); e != list_end(&all_list); e=list_next(e))
+  {
+    struct thread* t=list_entry(e, struct thread, allelem);
+    mlfqs_priority(t);
+  }
+}
+```
+
+`mlfqs_recalc_priority()`는 전체 thread의 priority만을 업데이트 시켜주는 역할을 한다. 이 함수는 뒤의 `timer_interrupt()`에서 사용된다.
+
+```c
+int
+thread_get_nice (void) 
+{
+  intr_disable();
+  int n=thread_current()->nice;
+  intr_enable();
+  return n;
+}
+```
+
+`thread_get_nice ()`는 interrupt가 disable된 상태에서 수행된다. thread의 `nice`값을 반환한다.
+
+```c
+int
+thread_get_load_avg (void) 
+{
+  intr_disable();
+  int l=fp_to_int_round(mul_mixed(load_avg, 100));
+  intr_enable();
+  return l;
+}
+```
+
+`thread_get_load_avg ()`는 interrupt가 disable된 상태에서 수행된다. `load_avg`값을 반환한다.
+
+```c
+int
+thread_get_recent_cpu (void) 
+{
+  intr_disable();
+  int r=fp_to_int_round(mul_mixed(thread_current()->recent_cpu, 100));
+  intr_enable();
+  return r;
+}
+```
+
+`thread_get_recent_cpu ()`는 interrupt가 disable된 상태에서 수행된다. thread의 `recent_cpu`값을 반환한다.
+
+```c
+static void
+timer_interrupt (struct intr_frame *args UNUSED)
+{
+  ticks++;
+  thread_tick ();
+
+  if(thread_mlfqs)
+  {
+    mlfqs_update();
+  }
+  
+  thread_wakeup();
+}
+```
+
+`timer_interrupt()` 함수는 mlfqs scheduler을 사용하고 있을 때 100 ticks마다 `mlfqs_recalc()`를 호출하고, 4초마다 `mlfqs_recalc_priority()`를 호출한다. 위의 `mlfqs_update()`의 소스코드는 아래와 같다.
+
+```c
+void mlfqs_update()
+{
+  mlfqs_increment();
+  if(timer_ticks() % TIMER_FREQ == 0)
+  {
+    mlfqs_recalc();
+  }
+  else if(timer_ticks() % 4 ==0)
+  {
+    mlfqs_recalc_priority();
+  }
+}
+```
+
+
+
 ### Differences from design
+
+pintos에서 float 형식이 지원되지 않는 줄 모르고 처음에는 `fixed_point.h` 파일 없이 변수들 사이의 연산을 직접적으로 행하였다. 하지만 이후에 그것을 알고 `fixed_point.h` 파일에 helper function을 정의해 사용하여 문제를 해결할 수 있었다.
+
+
 
 ## Priority scheduling in MLFQS
 
 ### Control flow
 
+![mlfqs scheduling diagram](../assets/1/mlfqs_scheduling.png)
+
 ### Implementation
+
+```c
+void
+thread_set_nice (int nice UNUSED) 
+{
+  intr_disable();
+  thread_current()->nice=nice;
+  mlfqs_priority(thread_current());
+  thread_yield();
+  intr_enable();
+}
+```
+
+advanced scheduler는 priority setting을 직접적으로 하지 못하지만 `thread_set_nice()` 함수를 이용한 nice setting을 통해 간접적으로 priority setting을 할 수 있다. nice setting 이후에는 해당 thread의 priority를 재계산하고 `thread_yield()` 함수를 이용해 scheduling을 진행하게 된다.
+
+
 
 ### Differences from design
 
+기존 design에는 nice 값 설정 이후 scheduling을 진행하지 않았다. 하지만 실제 구현을 해보니 nice set 이후에 새로운 priority로 인한 scheduling이 필요함을 알게 되어 `thread_yield()`를 nice set 이후에 진행하였다.
+
+
+
 ## Screenshots
+
+![mlfqs test result](../assets/1/screenshot_mlfqs.png)
+
+모든 test가 통과했음을 볼 수 있다.
