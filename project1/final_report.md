@@ -217,12 +217,15 @@ next_thread_to_run (void)
 void
 thread_set_priority (int new_priority) 
 {
-  int prev_priority = thread_current ()->priority;
-  thread_current ()->original_priority = new_priority;
-  if(list_empty(&thread_current()->donators))
+  if(!thread_mlfqs)
   {
-    thread_current ()->priority = new_priority;
-    thread_yield();
+    int prev_priority = thread_current ()->priority;
+    thread_current ()->original_priority = new_priority;
+    if(list_empty(&thread_current()->donators))
+    {
+      thread_current ()->priority = new_priority;
+      thread_yield();
+    }
   }
 }
 ```
@@ -507,15 +510,17 @@ Nested donation은 receiver가 acquire하고자 하는 lock이 있어서, 해당
 void
 thread_set_priority (int new_priority) 
 {
-  int prev_priority = thread_current ()->priority;
-  thread_current ()->original_priority = new_priority;
-  if(list_empty(&thread_current()->donators))
+  if(!thread_mlfqs)
   {
-    thread_current ()->priority = new_priority;
-    thread_yield();
+    int prev_priority = thread_current ()->priority;
+    thread_current ()->original_priority = new_priority;
+    if(list_empty(&thread_current()->donators))
+    {
+      thread_current ()->priority = new_priority;
+      thread_yield();
+    }
   }
 }
-
 /* Returns the current thread's priority. */
 int
 thread_get_priority (void) 
