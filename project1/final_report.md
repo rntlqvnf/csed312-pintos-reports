@@ -583,7 +583,11 @@ int div_fp(int x, int y);
 int div_mixed(int x, int n);
 ```
 
-`fixed_point.h` 에는 연산을 위한 helper function들이 정의되어 있는데, 이런 과정이 필요한 이유는 pintos가 float 형식을 감지하지 못하기 때문이다. 때문에 이 assignment에서 실수를 의미하는 모든 변수는 int 자료형에서 17.14 fixed-point number representation을 이용해 표현하게 된다. 그리고 `fixed_point.h` 는 그런 변수들을 적절하게 연산하게 도와준다.
+`fixed_point.h` 에는 연산을 위한 helper function들이 정의되어 있는데, 이런 과정이 필요한 이유는 pintos가 float 형식을 감지하지 못하기 때문이다.
+
+ 때문에 이 assignment에서 실수를 의미하는 모든 변수는 int 자료형에서 17.14 fixed-point number representation을 이용해 표현하게 된다. 
+ 
+ 그리고 `fixed_point.h` 는 그런 변수들을 적절하게 연산하게 도와준다.
 
 위에서 x, y는 실수를, n은 정수를 의미한다. 계산 방법은 다음과 같다.
 
@@ -598,7 +602,6 @@ int div_mixed(int x, int n);
 | Multiply x by y:                              | ((int64_t) x) * y / f                                    |
 | Multiply x by n:                              | x * n                                                    |
 | Divide x by y:                                | ((int64_t) x) * f / y                                    |
-
 
 
 ```c
@@ -649,7 +652,7 @@ void mlfqs_load_avg(void)
 
 `load_avg = (59/60) * load_avg + (1/60) * ready_threads`
 
-여기에서 `ready_threads`가 의미하는 것은 running thread(idle thread인 경우 제외)와 ready_list 안에 들어있는 thread의 총 개수이다.
+여기에서 `ready_thread_cnt`가 의미하는 것은 running thread(idle thread인 경우 제외)와 ready_list 안에 들어있는 thread의 총 개수이다.
 
 ```c
 void mlfqs_increment(void)
@@ -659,7 +662,9 @@ void mlfqs_increment(void)
 }
 ```
 
-`mlfqs_increment()`는 current thread의 `recent_cpu` 값을 1 증가시켜준다. 주의해야 할 점은 `recent_cpu` 값이 실수를 의미하기에 1을 단순히 더하면 안되고 (1<<14)를 더해줘야 한다는 것이다.
+`mlfqs_increment()`는 current thread의 `recent_cpu` 값을 1 증가시켜준다. 
+
+주의해야 할 점은 `recent_cpu` 값이 실수를 의미하기에 1을 단순히 더하면 안되고 (1<<14)를 더해줘야 한다는 것이다.
 
 ```c
 void mlfqs_recalc(void)
@@ -673,7 +678,6 @@ void mlfqs_recalc(void)
     mlfqs_priority(t);
   }
 }
-
 ```
 
 `mlfqs_recalc()`는 전체 thread의 `recent_cpu`,`priority`, 그리고 `load_avg`를 업데이트 시켜준다. 이 함수는 뒤의 `timer_interrupt()`에서 사용된다.
@@ -764,13 +768,9 @@ void mlfqs_update()
 }
 ```
 
-
-
 ### Differences from design
 
 pintos에서 float 형식이 지원되지 않는 줄 모르고 처음에는 `fixed_point.h` 파일 없이 변수들 사이의 연산을 직접적으로 행하였다. 하지만 이후에 그것을 알고 `fixed_point.h` 파일에 helper function을 정의해 사용하여 문제를 해결할 수 있었다.
-
-
 
 ## Priority scheduling in MLFQS
 
@@ -792,18 +792,22 @@ thread_set_nice (int nice UNUSED)
 }
 ```
 
-advanced scheduler는 priority setting을 직접적으로 하지 못하지만 `thread_set_nice()` 함수를 이용한 nice setting을 통해 간접적으로 priority setting을 할 수 있다. nice setting 이후에는 해당 thread의 priority를 재계산하고 `thread_yield()` 함수를 이용해 scheduling을 진행하게 된다.
+advanced scheduler는 priority setting을 직접적으로 하지 못하지만 `thread_set_nice()` 함수를 이용한 nice setting을 통해 간접적으로 priority setting을 할 수 있다. 
 
-
+nice setting 이후에는 해당 thread의 priority를 재계산하고 `thread_yield()` 함수를 이용해 scheduling을 진행하게 된다.
 
 ### Differences from design
 
 기존 design에는 nice 값 설정 이후 scheduling을 진행하지 않았다. 하지만 실제 구현을 해보니 nice set 이후에 새로운 priority로 인한 scheduling이 필요함을 알게 되어 `thread_yield()`를 nice set 이후에 진행하였다.
 
-
-
 ## Screenshots
 
 ![mlfqs test result](../assets/1/screenshot_mlfqs.png)
+
+모든 test가 통과했음을 볼 수 있다.
+
+# Overall screenshot
+
+![All pass](../assets/1/all_pass.png)
 
 모든 test가 통과했음을 볼 수 있다.
