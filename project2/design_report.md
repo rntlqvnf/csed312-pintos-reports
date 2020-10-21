@@ -77,11 +77,11 @@ main (void)
 1. BSS 초기화
 2. Command line argument 받아와서 파싱하기
 3. thread 초기화
-4. 메모리 초기화 (`palloc_init`, `malloc_init`, `paging_init`)
+4. [메모리 초기화](#메모리-초기화) (`palloc_init`, `malloc_init`, `paging_init`)
 5. tss (Task-State Segment), gdt(Globa Descriptor Table) 초기화
-6. Interrupt 초기화
-7. Exception / Syscall 초기화
-8. Run action
+6. [Interrupt 초기화](#interrupt-초기화)
+7. [Exception / Syscall 초기화](#exception--syscall-초기화)
+8. [Run action](#run-action)
 
 이 중 필요한 부분만 서술하겠다.
 
@@ -436,9 +436,175 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
 ### 1. Diagram
 
+![Syscall](../assets/2/syscall.PNG)
+
 ### 2. Explanation
 
+유저 프로그램은 `examples/`에 정의되어있다.
+
+예시로 `examples/halt.c`를 보자
+
+```c
+#include <syscall.h>
+
+int
+main (void)
+{
+  halt ();
+  /* not reached */
+}
+```
+
+`halt.c`는 `halt` syscall을 호출하고 있다.
+
+```c
+void
+halt (void) 
+{
+  syscall0 (SYS_HALT);
+  NOT_REACHED ();
+}
+```
+
+`halt()`는 `syscall0`함수에 halt의 번호를 전달해줘서 system call을 발생시키고 있다.
+
+```c
+/* Invokes syscall NUMBER, passing no arguments, and returns the
+   return value as an `int'. */
+#define syscall0(NUMBER)                                        \
+        ({                                                      \
+          int retval;                                           \
+          asm volatile                                          \
+            ("pushl %[number]; int $0x30; addl $4, %%esp"       \
+               : "=a" (retval)                                  \
+               : [number] "i" (NUMBER)                          \
+               : "memory");                                     \
+          retval;                                               \
+        })
+
+/* Invokes syscall NUMBER, passing argument ARG0, and returns the
+   return value as an `int'. */
+#define syscall1(NUMBER, ARG0)                                           \
+        ({                                                               \
+          int retval;                                                    \
+          asm volatile                                                   \
+            ("pushl %[arg0]; pushl %[number]; int $0x30; addl $8, %%esp" \
+               : "=a" (retval)                                           \
+               : [number] "i" (NUMBER),                                  \
+                 [arg0] "g" (ARG0)                                       \
+               : "memory");                                              \
+          retval;                                                        \
+        })
+
+/* Invokes syscall NUMBER, passing arguments ARG0 and ARG1, and
+   returns the return value as an `int'. */
+#define syscall2(NUMBER, ARG0, ARG1)                            \
+        ({                                                      \
+          int retval;                                           \
+          asm volatile                                          \
+            ("pushl %[arg1]; pushl %[arg0]; "                   \
+             "pushl %[number]; int $0x30; addl $12, %%esp"      \
+               : "=a" (retval)                                  \
+               : [number] "i" (NUMBER),                         \
+                 [arg0] "r" (ARG0),                             \
+                 [arg1] "r" (ARG1)                              \
+               : "memory");                                     \
+          retval;                                               \
+        })
+
+/* Invokes syscall NUMBER, passing arguments ARG0, ARG1, and
+   ARG2, and returns the return value as an `int'. */
+#define syscall3(NUMBER, ARG0, ARG1, ARG2)                      \
+        ({                                                      \
+          int retval;                                           \
+          asm volatile                                          \
+            ("pushl %[arg2]; pushl %[arg1]; pushl %[arg0]; "    \
+             "pushl %[number]; int $0x30; addl $16, %%esp"      \
+               : "=a" (retval)                                  \
+               : [number] "i" (NUMBER),                         \
+                 [arg0] "r" (ARG0),                             \
+                 [arg1] "r" (ARG1),                             \
+                 [arg2] "r" (ARG2)                              \
+               : "memory");                                     \
+          retval;                                               \
+        })
+```
+
+`syscall0` 함수는 0개의 인자를 받아 system call을 호출하는 함수이다.
+
+이와 유사한 `syscall1`,`syscall2`,`syscall3`들은 각각 1개, 2개, 3개의 인자를 받아 system call을 호출한다.
+
+각 함수들은 `int $0x30`를 통해 system call interrupt를 발생시킨다.
+
+이때 `0x30`인 이유는 `syscall_init()`에서 `0x30`에 등록했기 때문이다. [참조](#exception--syscall-초기화)
+
+Interrupt는 `intr_stub`와 `intr_entry`를 거쳐 `intr_handler()`에 전달된다.
+
+```c
+void
+intr_handler (struct intr_frame *frame) 
+{
+  bool external;
+  intr_handler_func *handler;
+
+  /* External interrupts are special.
+     We only handle one at a time (so interrupts must be off)
+     and they need to be acknowledged on the PIC (see below).
+     An external interrupt handler cannot sleep. */
+  external = frame->vec_no >= 0x20 && frame->vec_no < 0x30;
+  if (external) 
+    {
+      ASSERT (intr_get_level () == INTR_OFF);
+      ASSERT (!intr_context ());
+
+      in_external_intr = true;
+      yield_on_return = false;
+    }
+
+  /* Invoke the interrupt's handler. */
+  handler = intr_handlers[frame->vec_no];
+  if (handler != NULL)
+    handler (frame);
+  else if (frame->vec_no == 0x27 || frame->vec_no == 0x2f)
+    {
+      /* There is no handler, but this interrupt can trigger
+         spuriously due to a hardware fault or hardware race
+         condition.  Ignore it. */
+    }
+  else
+    unexpected_interrupt (frame);
+
+  /* Complete the processing of an external interrupt. */
+  if (external) 
+    {
+      ASSERT (intr_get_level () == INTR_OFF);
+      ASSERT (intr_context ());
+
+      in_external_intr = false;
+      pic_end_of_interrupt (frame->vec_no); 
+
+      if (yield_on_return) 
+        thread_yield (); 
+    }
+}
+```
+
+`intr_handler()`는 `handler = intr_handlers[frame->vec_no]`를 통해 system call handler를 불러오고, 이를 실행한다.
+
+```c
+static void
+syscall_handler (struct intr_frame *f UNUSED) 
+{
+  printf ("system call!\n");
+  thread_exit ();
+}
+```
+
+현재 `syscall_handler()`는 단순히 `system call!`를 출력하고 종료된다.
+
 ### 3. Problems
+
+- `syscall_handler()`가 아무 동작도 하지 않는다.
 
 ## 3. File System
 
