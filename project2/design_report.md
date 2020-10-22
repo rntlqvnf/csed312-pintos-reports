@@ -653,6 +653,7 @@ syscall_handler (struct intr_frame *f UNUSED)
 ### 3. Problems
 
 - `syscall_handler()`가 아무 동작도 하지 않는다.
+- file descriptor가 전혀 정의되어 있지 않다. 파일 입출력을 하기 위해서는 file descriptor가 필요하다.
 
 ## 3. File System
 
@@ -1060,12 +1061,16 @@ struct thread
     struct semaphore child_lock;   /* wait 하고 있는 lock */
     int tid_on_wait;               /* wait 하고 있는 tid */
     bool success_on_load_child;  /* 프로그램 적재 성공 여부 */
+  
+  	/*
+  	file descriptor table member을 추가해야 한다.
+  	*/
   }
 ```
 
 ### 3. Create
 
-- In `userprog/syscal.c`
+- In `userprog/syscall.c`
 
 ```c
 void check_address(void* addr)
@@ -1076,6 +1081,107 @@ void check_address(void* addr)
   */
 }
 ```
+
+- in `userprog/process.c`
+
+```c
+int process_add_file(struct file* f)
+{
+  /*
+  file descriptor table에 file object f 를 추가
+  return value는 file descriptor이다.
+  */
+}
+
+struct file* process_get_file(int fd)
+{
+  /*
+  간단히 fd에 해당하는 file object를 return한다.
+  */
+}
+
+void process_close_file (int fd)
+{
+  /*
+  간단히 fd에 해당하는 file object를 close한다.
+  */
+}
+```
+
+
+
+- In `src/userprog/syscall.c` (for file descriptor)
+
+```c
+int open(const char* file)
+{
+  /*
+  file을 열 때 사용된다. file에 file descriptor를 부여하고 그것을 반환한다.
+  */
+}
+
+int filesize(int fd)
+{
+  /*
+  file descriptor를 의미하는 fd를 인자로 받아서 그것을 이용해
+  그것이 가리키고 있는 file object를 찾는다.
+  그리고 그 file의 길이를 구해서 return한다.
+  */
+}
+
+int read(int fd , void *buffer unsigned size)
+{
+  /*
+  fd에 해당하는 file의 data를 read하는 역할을 한다.
+  만약 reading에 성공하면 그 byte 수를 반환한다.
+  buffer은 file을 reading하여 얻은 정보를 저장할 주소를 가리키고 있으며,
+  size는 그 정보의 크기를 의미한다.
+  
+  file에 대한 동시 접근을 막기 위해 lock을 hold해야 사용할 수 있도록 한다.
+  fd가 0이면 키보드로부터의 입력을 받는 것이므로 이것을 buffer가 가리키는 위치에 저장한다.
+  fd가 0이 아니면 file의 data를 저장하고 그 크기를 반환한다.
+  */
+}
+
+int write(int fd , void *buffer unsigned size)
+{
+  /*
+ 	fd가 가리키고 있는 file에 data를 write하는 역할을 한다.
+ 	read() 함수와 마찬가지로 writing에 성공하면 그 byte 수를 반환한다.
+ 	인자로 주어지는 buffer은 write할 data의 주소를 가리키고 있다.
+ 	size는 그 정보의 크기를 의미한다.
+ 	
+  file에 대한 동시 접근을 막기 위해 lock을 hold해야 사용할 수 있도록 한다.
+  fd가 1이면 기본 출력이므로 buffer에 저장된 data를 화면에 바로 출력한다.
+  fd가 1이 아니면 buffer에 저장된 data를 해당 file에 write하고 그 byte 수를 반환한다.
+  */
+}
+
+int seek(int fd, unsigned position)
+{
+  /*
+  fd가 가리키고 있는 file object를 찾고 그것의 위치를 position만큼 (+)한다.
+  */
+}
+
+unsigned tell(int fd)
+{
+  /*
+  fd가 가리키고 있는 file object가 열린 file의 위치를 반환한다.
+  */
+}
+
+void close(int fd)
+{
+  /*
+  fd가 가리키고 있는 file object file을 닫는다.
+  */
+}
+```
+
+
+
+
 
 ### 4. Change
 
@@ -1200,6 +1306,57 @@ case SYS_WAIT:
   break;
 ```
 
+- In `src/threads/thread.c`
+
+thread를 생성할 때 `thread_create()`함수에서 file descriptor table에 메모리를 할당해야 한다.
+
+```c
+tid_t thread_create (const char *name, int priority, thread_func *function, void *aux)
+{
+  /*
+  file decriptor table에 메모리 할당
+ 	fd의 initial value는 2로 설정된다. 0,1이 표준 입출력을 담당하기 때문이다.
+  */
+}
+```
+
+
+
+- In `threads/synch.h`
+
+`read()`, `write()` system call로 file에 access할 때 lock을 획득하도록 만든다. 따라서 `struct lock file_lock`을 global variable로 추가해준다.
+
+
+
+- In `src/userprog/process.c`
+
+process exit을 할 때 현재 열린 모든 file을 닫는다.
+
+```c
+void
+process_exit (void)
+{
+  struct thread *cur = thread_current ();
+  uint32_t *pd;
+
+  /* Destroy the current process's page directory and switch back
+     to the kernel-only page directory. */
+  pd = cur->pagedir;
+  if (pd != NULL) 
+    {
+      /* ... */
+    
+    	/*
+    	현재 열린 모든 file을 찾아 close를 진행해야 한다.
+    	*/
+    }
+}
+```
+
+
+
+
+
 ### 5. Algorithm
 
 3가지로 나누어서 설명하겠다.
@@ -1208,22 +1365,55 @@ case SYS_WAIT:
 
 - **create**
   
-  > 파일을 생성하는 system call
+  `thread_create()` 단계에서 file decriptor table에 메모리를 할당한다.
 
-  `filesys_create()`를 호출하여 파일을 생성한다.
+  `process_add_file()` 함수를 이용해 인자로 전해지는 file object에 대한 file descriptor을 지정한다.
 
+  
+  
 - **remove**
   
-  > 파일을 삭제하는 system call
+  `process_close_file()` 함수를 이용해 fd가 가리키고 있는 file을 close한다.
 
-  `filesys_remove()`를 호출하여 파일을 삭제한다.
+  `process_exit()` 함수에서 process를 종료할 때 모든 process의 열린 file을 찾아서 close를 진행한다.
+
+  
 
 - **filesize**
+
+  `filesize()`를 호출하면 인자로 전해지는 fd가 가리키고 있는 file의 크기를 알려준다.
+
+  
+
 - **read**
+
+  `read()` 함수를 호출하면 인자로 전해지는 fd가 가리키고 있는 file에서 data를 읽어와 `buffer`의 위치에 최대 `size` 만큼의 data를 저장한다.
+
+  
+
 - **write**
+
+  `write()` 함수를 호출하면 인자로 전해지는 fd가 가리키고 있는 file에 `buffer`의 위치에서 data를 읽어와 write를 진행한다.
+
+  
+
 - **seek**
+
+  `seek()` 함수를 호출하면 인자로 전해지는 fd가 가리키고 있는 열린 file의 위치를 `position`만큼 이동시켜준다.
+
+  
+
 - **tell**
+
+  `tell()` 함수를 호출하면 간단히 fd가 가리키고 있는 file의 위치를 알려준다.
+
+  
+
 - **close**
+
+  `close()` file은 fd가 가리키고 있는 파일을 close한다.
+
+  
 
 #### System calls without process hierarchy
 
@@ -1366,7 +1556,7 @@ process_exit (void)
    		/*
    		file_allow_write(cur->running_file);
    		file_close(cur->running_file);
-   		
+   		*/
     }
 }
 ```
