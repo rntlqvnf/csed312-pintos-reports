@@ -219,7 +219,7 @@ intr_register_int (uint8_t vec_no, int dpl, enum intr_level level,
 
 Exception과 Syscall의 초기화는 interrupt handler 등록을 의미한다.
 
-아때 handler 등록은 `intr_register_int`를 통해 이뤄진다.
+이때 handler 등록은 `intr_register_int`를 통해 이뤄진다.
 
 `exception_init()`는 이전에 `intr_init()`에서 작성해두었던 `0x00`~`0x13`까지의 interrupt를 handler와 연결한다.
 
@@ -227,7 +227,7 @@ Exception과 Syscall의 초기화는 interrupt handler 등록을 의미한다.
 
 `syscall_init()`는 system call interrupt의 handler를 등록한다.
 
-이 system call handler는 `0x30`에 등록되고, 단순히 `system call!`을 출력하고 끝난다.
+System call handler는 `0x30`에 등록되고, 단순히 `system call!`을 출력하고 끝난다.
 
 #### Run action
 
@@ -305,6 +305,8 @@ run_task (char **argv)
 
 현재 `process_wait()`은 단순히 `-1`을 반환한다.
 
+이 때문에 `process_execute()`를 통해 프로세스를 생성하더라도, 곧바로 프로세스가 종료되어버린다.
+
 ```c
 tid_t
 process_execute (const char *file_name) 
@@ -327,7 +329,7 @@ process_execute (const char *file_name)
 }
 ```
 
-`process_execute()`는 유저 프로그램을 실행하는 함수이다.
+`process_execute()`는 유저 프로그램을 로드 및 실행하는 함수이다.
 
 현재는 단순하게 전체 파일 이름을 `thread_create()`에 넘겨 thread를 생성하고 있다.
 
@@ -362,7 +364,9 @@ start_process (void *file_name_)
 }
 ```
 
-이때, thread가 실행하게 되는 `start_process()`는 프로그램을 메모리에 로드한 후, `intr_exit`로 점프한다.
+이때, thread가 실행하게 되는 `start_process()`는 `load()`를 통해 로드를 시도해보고, 실패한다면 곧바로 종료하고 성공한다면 `intr_exit`로 점프하는 함수이다.
+
+`intr_exit`로 점프하는 이유는 마치 이전에 interrupt에 의해 멈춘 것처럼 간주하여, restore을 하기 위해서이다.
 
 ```c
 bool
@@ -468,9 +472,11 @@ Process의 종료는 `thread_exit()` -> `process_exit()`를 통해 이뤄진다.
 
 `process_exit()`는 process에게 할당된 자원들을 할당해제하는 역할을 한다.
 
+`thread_exit()`는 자원이 할당 해제된 process를 관리 대상에서 제거한다.
+
 ### 3. Problems
 
-- `process_wait()`이 아무 동작도 하고 있지 않다. 
+- `process_wait()`이 아무 동작도 하지 않고 곧바로 종료되어 유저 프로그램이 실행되지 못한다.
 
 - `process_execute()`가 argument passing을 지원하고 있지 않다.
 
@@ -797,13 +803,13 @@ setup_stack (void **esp, char * file_name)
 
 ### 5. Algorithm
 
-우선 `process_execute`는 command line에서 파일 이름을 추출해내어 thread의 이름으로 삼는다.
+우선 `process_execute()`는 command line에서 파일 이름을 추출해내어 thread의 이름으로 삼는다.
 
-Argument Passingdms `setup_stack`에서 이루어진다.
+Argument Passing은 `setup_stack()`에서 이루어진다.
 
-`setup_stack`은 stack을 초기화 하기 전, stack에 arguments를 넣어주는 `arguments_push`를 호출한다.
+`setup_stack()`은 stack을 초기화 하기 전, stack에 arguments를 넣어주는 `arguments_push()`를 호출한다.
 
-`arguments_push`는 PPT에 제공된 convention과 동일한 순서로 Arguments를 넣어준다.
+`arguments_push()`는 PPT에 제공된 convention과 동일한 순서로 Arguments를 넣어준다.
 
 ## 3. System Call
 
@@ -829,11 +835,216 @@ Argument Passingdms `setup_stack`에서 이루어진다.
 
 ### 2. Data Structure
 
+```c
+struct thread
+  {
+    struct thread* parent_process; /* 부모 process */
+    struct list child_processes;   /* child process의 list */
+    struct semaphore child_lock;   /* wait 하고 있는 lock */
+    int tid_on_wait;               /* wait 하고 있는 tid */
+    bool success_on_load_child;  /* 프로그램 적재 성공 여부 */
+  }
+```
+
 ### 3. Create
+
+- In `userprog/syscal.c`
+
+```c
+void check_address(void* addr)
+{
+  /*
+  접근하고자 하는 주소가 유저 영역의 주소 값인지 판단한다.
+  잘못된 접근일 경우 `exit_code`를 -1로 하고, `thread_exit()` 호출
+  */
+}
+```
 
 ### 4. Change
 
+- In `userprog/process.c`
+  
+```c
+tid_t
+process_execute (const char *file_name) 
+{
+  ...
+  if (tid == TID_ERROR)
+    palloc_free_page (fn_copy); 
+  sema_down(&thread_current()->child_lock); //child가 적재될 될 때까지 대기
+
+  if(!thread_current()->success_on_load_child) // 생성 실패
+    return -1;
+
+  return tid;
+}
+
+static void
+start_process (void *file_name_)
+{
+  ...
+  if (!success) { //생성 실패
+    thread_current()->parent->success_on_load_child=false; //적재 실패 전달
+    sema_up(&thread_current()->parent->child_lock); //부모 lock 풀기
+    thread_exit();
+  }
+  else
+  {
+    thread_current()->parent->success_on_load_child=true; //적재 성공 전달
+    sema_up(&thread_current()->parent->child_lock); //부모 lock 풀기
+  }
+  ...
+}
+
+int
+process_wait (tid_t child_tid) 
+{
+  check whethere tid is in thread->child_processes
+  if not exist return -1
+
+  thread->tid_on_wait = child_tid
+  sema_down(thread->child_lock) //자식 프로세스 종료 대기
+
+  remove child process from thread_child_processes
+  return exit status of child process
+}
+```
+
+- In `userprog/syscal.c`
+
+```c
+static void
+syscall_handler (struct intr_frame *f UNUSED) 
+{
+  int * esp = f->esp;
+  int system_call_number = * esp;
+  
+  switch (system_call_number)
+  {
+    /* Create big system call switch case */
+    case :
+      break;
+    case :
+      break;
+    ...
+    default:
+      break;
+  }
+}
+```
+
+- For each case
+
+```c
+case SYS_HALT:
+  call shutdown_power_off();
+  break;
+```
+
+```c
+case SYS_EXIT:
+  set current thread exit_code;
+  if parent->tid_on_wait == tid then
+    call sema_up(parent->child_lock)
+  call thread_exit()
+  break;
+```
+
+```c
+case SYS_CREATE:
+  call check_addr();
+  call filesys_create() to create file
+  set eax to created file
+  break;
+```
+
+```c
+case SYS_REMOVE:
+  call check_addr();
+  call filesys_remove() to remove file
+  if fail, set eax to false
+  else set eax to true
+  break;
+```
+
+```c
+case SYS_EXEC:
+  call check_addr()
+  call process_execute() to execute child process
+  set eax to returned child tid
+  break;
+```
+
+```c
+case SYS_WAIT:
+  call check_addr()
+  call process_wait() to wait on child process
+  set eax to returnend status
+  break;
+```
+
 ### 5. Algorithm
+
+3가지로 나누어서 설명하겠다.
+
+#### System calls related to File
+
+- **create**
+  
+  > 파일을 생성하는 system call
+
+  `filesys_create()`를 호출하여 파일을 생성한다.
+
+- **remove**
+  
+  > 파일을 삭제하는 system call
+
+  `filesys_remove()`를 호출하여 파일을 삭제한다.
+
+- **filesize**
+- **read**
+- **write**
+- **seek**
+- **tell**
+- **close**
+
+#### System calls without process hierarchy
+
+- **halt**
+
+  > pintos를 종료시키는 system call
+
+  `shhutdown_power_off()`를 호출하여 pintos를 종료시킨다.
+
+- **exit**
+  
+  > 현재 user program을 종료시키고, return status를 kernel에 전달하는 system call
+
+  Thread의 exit status를 출력하고, `thread_exit()`를 호출하여 thread를 종료시킨다.
+
+#### System calls with process hierarchy
+
+- **exec**
+
+  > 자식 프로세스를 생성하고 프로그램을 실행시키는 system call
+
+  `process_execute()`를 호출하여 자식 프로세스를 생성 및 실행한다. 
+
+  `process_execute()`는 자식 프로세스가 무사히 메모리에 로드 될 때까지 실행을 중지해야 하므로 `sema_down`을 써서 대기한다.
+
+  자식 프로세스는 `start_process()`에서 메모리 로드가 끝나면 `sema_up`을 해서 부모의 대기를 풀어주고, 성공 여부를 `success_on_load_child`에 전달해준다.
+
+- **wait**
+  
+  > 자식 프로세스가 종료될 때까지 기다리는 system call
+
+  우선 전달된 tid가 유효한지 (자식이 맞는지) 확인한다.
+
+  맞지 않다면 -1을 리턴한다.
+
+  맞다면, `sema_down(thread->child_lock)`을 사용해 자식 프로세스가 종료될 때까지 대기한다.
+
+  자식 프로세스는 `exit` system call을 호출했을 때, 부모가 자신을 기다리고 있다면 부모의 lock을 풀어주고 `thread_exit()`를 호출하여 종료한다.
 
 ## 4. Denying Writes to Executables
 
