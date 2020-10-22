@@ -660,9 +660,226 @@ syscall_handler (struct intr_frame *f UNUSED)
 
 ### 2. Explanation
 
+기존 pintos system 안에서 프로그램 file에 쓰기 권한을 제거하는 `file_deny_write()` 함수와 프로그램 종료 이후 file에 쓰기 권한을 부여하는 `file_allow_write()` 함수가 다음과 같이 정의되어 있다.
+
+```c
+/* Prevents write operations on FILE's underlying inode
+   until file_allow_write() is called or FILE is closed. */
+void
+file_deny_write (struct file *file) 
+{
+  ASSERT (file != NULL);
+  if (!file->deny_write) 
+    {
+      file->deny_write = true;
+      inode_deny_write (file->inode);
+    }
+}
+
+/* Re-enables write operations on FILE's underlying inode.
+   (Writes might still be denied by some other file that has the
+   same inode open.) */
+void
+file_allow_write (struct file *file) 
+{
+  ASSERT (file != NULL);
+  if (file->deny_write) 
+    {
+      file->deny_write = false;
+      inode_allow_write (file->inode);
+    }
+}
+```
+
+file open을 진행하는 함수는 `load()` 함수이다. 
+
+`load()` 함수는 `pintos/src/userprog/process.c`에 다음과 같이 정의되어 있다.
+
+```c
+bool
+load (const char *file_name, void (**eip) (void), void **esp) 
+{
+  struct thread *t = thread_current ();
+  struct Elf32_Ehdr ehdr;
+  struct file *file = NULL;
+  off_t file_ofs;
+  bool success = false;
+  int i;
+
+  /* Allocate and activate page directory. */
+  t->pagedir = pagedir_create ();
+  if (t->pagedir == NULL) 
+    goto done;
+  process_activate ();
+
+  /* Open executable file. */
+  file = filesys_open (file_name);
+  if (file == NULL) 
+    {
+      printf ("load: %s: open failed\n", file_name);
+      goto done; 
+    }
+
+  /* Read and verify executable header. */
+  if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
+      || memcmp (ehdr.e_ident, "\177ELF\1\1\1", 7)
+      || ehdr.e_type != 2
+      || ehdr.e_machine != 3
+      || ehdr.e_version != 1
+      || ehdr.e_phentsize != sizeof (struct Elf32_Phdr)
+      || ehdr.e_phnum > 1024) 
+    {
+      printf ("load: %s: error loading executable\n", file_name);
+      goto done; 
+    }
+
+  /* Read program headers. */
+  file_ofs = ehdr.e_phoff;
+  for (i = 0; i < ehdr.e_phnum; i++) 
+    {
+      struct Elf32_Phdr phdr;
+
+      if (file_ofs < 0 || file_ofs > file_length (file))
+        goto done;
+      file_seek (file, file_ofs);
+
+      if (file_read (file, &phdr, sizeof phdr) != sizeof phdr)
+        goto done;
+      file_ofs += sizeof phdr;
+      switch (phdr.p_type) 
+        {
+        case PT_NULL:
+        case PT_NOTE:
+        case PT_PHDR:
+        case PT_STACK:
+        default:
+          /* Ignore this segment. */
+          break;
+        case PT_DYNAMIC:
+        case PT_INTERP:
+        case PT_SHLIB:
+          goto done;
+        case PT_LOAD:
+          if (validate_segment (&phdr, file)) 
+            {
+              bool writable = (phdr.p_flags & PF_W) != 0;
+              uint32_t file_page = phdr.p_offset & ~PGMASK;
+              uint32_t mem_page = phdr.p_vaddr & ~PGMASK;
+              uint32_t page_offset = phdr.p_vaddr & PGMASK;
+              uint32_t read_bytes, zero_bytes;
+              if (phdr.p_filesz > 0)
+                {
+                  /* Normal segment.
+                     Read initial part from disk and zero the rest. */
+                  read_bytes = page_offset + phdr.p_filesz;
+                  zero_bytes = (ROUND_UP (page_offset + phdr.p_memsz, PGSIZE)
+                                - read_bytes);
+                }
+              else 
+                {
+                  /* Entirely zero.
+                     Don't read anything from disk. */
+                  read_bytes = 0;
+                  zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
+                }
+              if (!load_segment (file, file_page, (void *) mem_page,
+                                 read_bytes, zero_bytes, writable))
+                goto done;
+            }
+          else
+            goto done;
+          break;
+        }
+    }
+
+  /* Set up stack. */
+  if (!setup_stack (esp))
+    goto done;
+
+  /* Start address. */
+  *eip = (void (*) (void)) ehdr.e_entry;
+
+  success = true;
+
+ done:
+  /* We arrive here whether the load is successful or not. */
+  file_close (file);
+  return success;
+}
+```
+
+기존의 `load()`함수는 위에서 볼 수 있듯이 file system을 향한 외부 접근에 대해 어떤 제약도 없이 구현되어 있다.
+
+`load()`함수는 user process를 load하고 running 상태로 만들 때 사용된다. 즉, process의 개시에 file을 loading하는데에 이용된다.
+
+```c
+static void
+start_process (void *file_name_)
+{
+  char *file_name = file_name_;
+  struct intr_frame if_;
+  bool success;
+
+  /* Initialize interrupt frame and load executable. */
+  memset (&if_, 0, sizeof if_);
+  if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
+  if_.cs = SEL_UCSEG;
+  if_.eflags = FLAG_IF | FLAG_MBS;
+  success = load (file_name, &if_.eip, &if_.esp);
+
+  /* If load failed, quit. */
+  palloc_free_page (file_name);
+  if (!success) 
+    thread_exit ();
+
+  /* Start the user process by simulating a return from an
+     interrupt, implemented by intr_exit (in
+     threads/intr-stubs.S).  Because intr_exit takes all of its
+     arguments on the stack in the form of a `struct intr_frame',
+     we just point the stack pointer (%esp) to our stack frame
+     and jump to it. */
+  asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
+  NOT_REACHED ();
+}
+```
+
+반대로 process가 끝날 때에는 다음과 같이 정의되어 있는 `process_exit()` 함수를 이용하게 된다.
+
+```c
+void
+process_exit (void)
+{
+  struct thread *cur = thread_current ();
+  uint32_t *pd;
+
+  /* Destroy the current process's page directory and switch back
+     to the kernel-only page directory. */
+  pd = cur->pagedir;
+  if (pd != NULL) 
+    {
+      /* Correct ordering here is crucial.  We must set
+         cur->pagedir to NULL before switching page directories,
+         so that a timer interrupt can't switch back to the
+         process page directory.  We must activate the base page
+         directory before destroying the process's page
+         directory, or our active page directory will be one
+         that's been freed (and cleared). */
+      cur->pagedir = NULL;
+      pagedir_activate (NULL);
+      pagedir_destroy (pd);
+    }
+}
+```
+
+File system에 대한 어떤 제약도 없으므로 기존의 `process_exit()` 함수에는 file system에 대한 어떤 동작도 구현되어 있지 않다(page directory의 파괴만 정의되어 있다).
+
+
+
 ### 3. Problems
 
-// 이거 하셈
+실행중인 프로그램의 file data가 modified되면 현재 실행중인 프로그램의 동작에 영향을 미칠 수 있다. 이를 해결하기 위해서 실행중인 프로그램의 file data에 대한 외부 write 접근을 차단해야한다.
+
+
 
 # Solutions for each requirements
 
@@ -1052,8 +1269,112 @@ case SYS_WAIT:
 
 ### 2. Data Structure
 
+```c
+struct thread
+  {
+    /* ... */
+  	struct file *running_file;
+  	/* ... */
+  };
+```
+
+기존의 `struct thread`에는 file system을 다루는 member가 존재하지 않았다. 따라서 현재 실행중인 프로그램의 file list를 다루는 member을 추가해줘야 한다.
+
+
+
 ### 3. Create
+
+None
+
+
 
 ### 4. Change
 
+`load()` 함수가 외부로부터의 file system write에 대한 제약을 걸고 있지 않기 때문에 이것을 추가한 `load()`함수를 구현해야 한다.
+
+```c
+bool
+load (const char *file_name, void (**eip) (void), void **esp) 
+{
+  struct thread *t = thread_current ();
+  struct Elf32_Ehdr ehdr;
+  struct file *file = NULL;
+  off_t file_ofs;
+  bool success = false;
+  int i;
+
+  /* Allocate and activate page directory. */
+  t->pagedir = pagedir_create ();
+  if (t->pagedir == NULL) 
+    goto done;
+  process_activate ();
+
+  /* lock acquire */
+  
+  /* Open executable file. */
+  file = filesys_open (file_name);
+  if (file == NULL) 
+    {
+    	/* lock release */
+      printf ("load: %s: open failed\n", file_name);
+      goto done; 
+    }
+	/*
+	t->running_file=file;
+	file_deny_write(file);
+	
+	lock_release()
+	*/
+  
+/* ... */
+   done:
+  /* We arrive here whether the load is successful or not. */
+  file_close (file);
+  return success;
+}
+```
+
+우선 file opening 이전에 lock을 hold한다 (중간에 방해받지 않기 위해). 만약 file이 NULL이라면 추가 동작이 필요하지 않으므로 lock을 release하고 jump를 통해 done으로 이동한다.
+
+만약 file이 NULL이 아니라면 thread t의 member 중 running_file를 file로 지정하고, `file_deny_write()`함수를 이용해 해당 file에 대한 write access를 차단한다. 이 과정을 마치면 lock을 release한다.
+
+반대로 process가 끝날 때에는 해당 file에 대한 접근이 다시 허용되어야 하므로 `file_allow_write()`함수를 이용해 다시 file 변경을 허락해주어야 한다.
+
+```c
+void
+process_exit (void)
+{
+  struct thread *cur = thread_current ();
+  uint32_t *pd;
+
+  /* Destroy the current process's page directory and switch back
+     to the kernel-only page directory. */
+  pd = cur->pagedir;
+  if (pd != NULL) 
+    {
+      /* Correct ordering here is crucial.  We must set
+         cur->pagedir to NULL before switching page directories,
+         so that a timer interrupt can't switch back to the
+         process page directory.  We must activate the base page
+         directory before destroying the process's page
+         directory, or our active page directory will be one
+         that's been freed (and cleared). */
+      cur->pagedir = NULL;
+      pagedir_activate (NULL);
+      pagedir_destroy (pd);
+    
+   		/*
+   		file_allow_write(cur->running_file);
+   		file_close(cur->running_file);
+   		
+    }
+}
+```
+
+
+
 ### 5. Algorithm
+
+우선 file system의 접근을 process start과 함께 제한하기 위해 `load()` 함수 내부에 `file_deny_write()`함수를 이용해 write access를 제한한다.
+
+반대로 process가 끝날 때에는 `file_allow_write()`함수를 이용해 file write access를 다시 허용해준다.
