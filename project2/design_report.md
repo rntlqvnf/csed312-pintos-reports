@@ -653,13 +653,14 @@ syscall_handler (struct intr_frame *f UNUSED)
 ### 3. Problems
 
 - `syscall_handler()`가 아무 동작도 하지 않는다.
+
+- process hierarchy에 대해 아무것도 구현되어있지 않다. 구조는 물론이고, waiting이나 exec등 필수적인 것들도 전혀 구현되어있지 않다.
+
 - file descriptor가 전혀 정의되어 있지 않다. 파일 입출력을 하기 위해서는 file descriptor가 필요하다.
 
 ## 3. File System
 
-### 1. Diagram
-
-### 2. Explanation
+### 1. Explanation
 
 기존 pintos system 안에서 프로그램 file에 쓰기 권한을 제거하는 `file_deny_write()` 함수와 프로그램 종료 이후 file에 쓰기 권한을 부여하는 `file_allow_write()` 함수가 다음과 같이 정의되어 있다.
 
@@ -693,8 +694,6 @@ file_allow_write (struct file *file)
 ```
 
 file open을 진행하는 함수는 `load()` 함수이다. 
-
-`load()` 함수는 `pintos/src/userprog/process.c`에 다음과 같이 정의되어 있다.
 
 ```c
 bool
@@ -738,111 +737,21 @@ load (const char *file_name, void (**eip) (void), void **esp)
   file_ofs = ehdr.e_phoff;
   for (i = 0; i < ehdr.e_phnum; i++) 
     {
-      struct Elf32_Phdr phdr;
-
-      if (file_ofs < 0 || file_ofs > file_length (file))
-        goto done;
-      file_seek (file, file_ofs);
-
       if (file_read (file, &phdr, sizeof phdr) != sizeof phdr)
-        goto done;
-      file_ofs += sizeof phdr;
-      switch (phdr.p_type) 
-        {
-        case PT_NULL:
-        case PT_NOTE:
-        case PT_PHDR:
-        case PT_STACK:
-        default:
-          /* Ignore this segment. */
-          break;
-        case PT_DYNAMIC:
-        case PT_INTERP:
-        case PT_SHLIB:
-          goto done;
-        case PT_LOAD:
-          if (validate_segment (&phdr, file)) 
-            {
-              bool writable = (phdr.p_flags & PF_W) != 0;
-              uint32_t file_page = phdr.p_offset & ~PGMASK;
-              uint32_t mem_page = phdr.p_vaddr & ~PGMASK;
-              uint32_t page_offset = phdr.p_vaddr & PGMASK;
-              uint32_t read_bytes, zero_bytes;
-              if (phdr.p_filesz > 0)
-                {
-                  /* Normal segment.
-                     Read initial part from disk and zero the rest. */
-                  read_bytes = page_offset + phdr.p_filesz;
-                  zero_bytes = (ROUND_UP (page_offset + phdr.p_memsz, PGSIZE)
-                                - read_bytes);
-                }
-              else 
-                {
-                  /* Entirely zero.
-                     Don't read anything from disk. */
-                  read_bytes = 0;
-                  zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
-                }
+        ...
+          if (validate_segment (&phdr, file))
+            ...
               if (!load_segment (file, file_page, (void *) mem_page,
                                  read_bytes, zero_bytes, writable))
-                goto done;
-            }
-          else
-            goto done;
-          break;
-        }
-    }
+                                 ...
 
   /* Set up stack. */
   if (!setup_stack (esp))
-    goto done;
-
-  /* Start address. */
-  *eip = (void (*) (void)) ehdr.e_entry;
-
-  success = true;
-
- done:
-  /* We arrive here whether the load is successful or not. */
-  file_close (file);
-  return success;
+  ...
 }
 ```
 
-기존의 `load()`함수는 위에서 볼 수 있듯이 file system을 향한 외부 접근에 대해 어떤 제약도 없이 구현되어 있다.
-
-`load()`함수는 user process를 load하고 running 상태로 만들 때 사용된다. 즉, process의 개시에 file을 loading하는데에 이용된다.
-
-```c
-static void
-start_process (void *file_name_)
-{
-  char *file_name = file_name_;
-  struct intr_frame if_;
-  bool success;
-
-  /* Initialize interrupt frame and load executable. */
-  memset (&if_, 0, sizeof if_);
-  if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
-  if_.cs = SEL_UCSEG;
-  if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
-
-  /* If load failed, quit. */
-  palloc_free_page (file_name);
-  if (!success) 
-    thread_exit ();
-
-  /* Start the user process by simulating a return from an
-     interrupt, implemented by intr_exit (in
-     threads/intr-stubs.S).  Because intr_exit takes all of its
-     arguments on the stack in the form of a `struct intr_frame',
-     we just point the stack pointer (%esp) to our stack frame
-     and jump to it. */
-  asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
-  NOT_REACHED ();
-}
-```
+`load()`함수는 process file (program)을 loading 하는데에 이용되나, 그 과정에서 file system을 향한 외부 접근에 대해 어떠한 제약도 걸지 않는다.
 
 반대로 process가 끝날 때에는 다음과 같이 정의되어 있는 `process_exit()` 함수를 이용하게 된다.
 
@@ -858,13 +767,6 @@ process_exit (void)
   pd = cur->pagedir;
   if (pd != NULL) 
     {
-      /* Correct ordering here is crucial.  We must set
-         cur->pagedir to NULL before switching page directories,
-         so that a timer interrupt can't switch back to the
-         process page directory.  We must activate the base page
-         directory before destroying the process's page
-         directory, or our active page directory will be one
-         that's been freed (and cleared). */
       cur->pagedir = NULL;
       pagedir_activate (NULL);
       pagedir_destroy (pd);
@@ -872,15 +774,13 @@ process_exit (void)
 }
 ```
 
-File system에 대한 어떤 제약도 없으므로 기존의 `process_exit()` 함수에는 file system에 대한 어떤 동작도 구현되어 있지 않다(page directory의 파괴만 정의되어 있다).
+`process_exit()`은 page directory의 파괴만 정의되어 있을 뿐, file system에 대한 어떤 동작도 구현되어 있지 않다.
 
+### 2. Problems
 
+실행중인 프로그램의 file data가 modified되면 현재 실행중인 프로그램의 동작에 영향을 미칠 수 있다. 
 
-### 3. Problems
-
-실행중인 프로그램의 file data가 modified되면 현재 실행중인 프로그램의 동작에 영향을 미칠 수 있다. 이를 해결하기 위해서 실행중인 프로그램의 file data에 대한 외부 write 접근을 차단해야한다.
-
-
+이를 해결하기 위해서 실행중인 프로그램의 file data에 대한 외부 write 접근을 차단해야한다.
 
 # Solutions for each requirements
 
@@ -1051,6 +951,8 @@ Argument Passing은 `setup_stack()`에서 이루어진다.
 
 ### 1. Diagram
 
+![IMpl SYS](../assets/2/impl_sys.PNG)
+
 ### 2. Data Structure
 
 ```c
@@ -1107,8 +1009,6 @@ void process_close_file (int fd)
   */
 }
 ```
-
-
 
 - In `src/userprog/syscall.c` (for file descriptor)
 
@@ -1179,10 +1079,6 @@ void close(int fd)
 }
 ```
 
-
-
-
-
 ### 4. Change
 
 - In `userprog/process.c`
@@ -1230,6 +1126,25 @@ process_wait (tid_t child_tid)
 
   remove child process from thread_child_processes
   return exit status of child process
+}
+
+void
+process_exit (void)
+{
+  struct thread *cur = thread_current ();
+  uint32_t *pd;
+
+  /* Destroy the current process's page directory and switch back
+     to the kernel-only page directory. */
+  pd = cur->pagedir;
+  if (pd != NULL) 
+    {
+      /* ... */
+    
+    	/*
+    	현재 열린 모든 file을 찾아 close를 진행해야 한다.
+    	*/
+    }
 }
 ```
 
@@ -1306,6 +1221,53 @@ case SYS_WAIT:
   break;
 ```
 
+```c
+case SYS_OPEN:
+  call open()
+  set eax to file descriptor
+  break;
+```
+
+```c
+case SYS_FILESIZE:
+  call filesize()
+  set eax to file size
+  break;
+```
+
+```c
+case SYS_READ:
+  call read()
+  set eax to size
+  break;
+```
+
+```c
+case SYS_WRITE:
+  call write()
+  set eax to byte count
+  break;
+```
+
+```c
+case SYS_SEEK:
+  call seek()
+  break;
+```
+
+```c
+case SYS_TELL:
+  call tell()
+  set eax to file location
+  break;
+```
+
+```c
+case SYS_CLOSE:
+  call close()
+  break;
+```
+
 - In `src/threads/thread.c`
 
 thread를 생성할 때 `thread_create()`함수에서 file descriptor table에 메모리를 할당해야 한다.
@@ -1320,42 +1282,9 @@ tid_t thread_create (const char *name, int priority, thread_func *function, void
 }
 ```
 
-
-
 - In `threads/synch.h`
 
 `read()`, `write()` system call로 file에 access할 때 lock을 획득하도록 만든다. 따라서 `struct lock file_lock`을 global variable로 추가해준다.
-
-
-
-- In `src/userprog/process.c`
-
-process exit을 할 때 현재 열린 모든 file을 닫는다.
-
-```c
-void
-process_exit (void)
-{
-  struct thread *cur = thread_current ();
-  uint32_t *pd;
-
-  /* Destroy the current process's page directory and switch back
-     to the kernel-only page directory. */
-  pd = cur->pagedir;
-  if (pd != NULL) 
-    {
-      /* ... */
-    
-    	/*
-    	현재 열린 모든 file을 찾아 close를 진행해야 한다.
-    	*/
-    }
-}
-```
-
-
-
-
 
 ### 5. Algorithm
 
@@ -1368,8 +1297,6 @@ process_exit (void)
   `thread_create()` 단계에서 file decriptor table에 메모리를 할당한다.
 
   `process_add_file()` 함수를 이용해 인자로 전해지는 file object에 대한 file descriptor을 지정한다.
-
-  
   
 - **remove**
   
@@ -1377,43 +1304,29 @@ process_exit (void)
 
   `process_exit()` 함수에서 process를 종료할 때 모든 process의 열린 file을 찾아서 close를 진행한다.
 
-  
-
 - **filesize**
 
   `filesize()`를 호출하면 인자로 전해지는 fd가 가리키고 있는 file의 크기를 알려준다.
-
-  
 
 - **read**
 
   `read()` 함수를 호출하면 인자로 전해지는 fd가 가리키고 있는 file에서 data를 읽어와 `buffer`의 위치에 최대 `size` 만큼의 data를 저장한다.
 
-  
-
 - **write**
 
   `write()` 함수를 호출하면 인자로 전해지는 fd가 가리키고 있는 file에 `buffer`의 위치에서 data를 읽어와 write를 진행한다.
-
-  
 
 - **seek**
 
   `seek()` 함수를 호출하면 인자로 전해지는 fd가 가리키고 있는 열린 file의 위치를 `position`만큼 이동시켜준다.
 
-  
-
 - **tell**
 
   `tell()` 함수를 호출하면 간단히 fd가 가리키고 있는 file의 위치를 알려준다.
 
-  
-
 - **close**
 
   `close()` file은 fd가 가리키고 있는 파일을 close한다.
-
-  
 
 #### System calls without process hierarchy
 
@@ -1457,6 +1370,8 @@ process_exit (void)
 
 ### 1. Diagram
 
+None
+
 ### 2. Data Structure
 
 ```c
@@ -1470,13 +1385,9 @@ struct thread
 
 기존의 `struct thread`에는 file system을 다루는 member가 존재하지 않았다. 따라서 현재 실행중인 프로그램의 file list를 다루는 member을 추가해줘야 한다.
 
-
-
 ### 3. Create
 
 None
-
-
 
 ### 4. Change
 
@@ -1560,8 +1471,6 @@ process_exit (void)
     }
 }
 ```
-
-
 
 ### 5. Algorithm
 
