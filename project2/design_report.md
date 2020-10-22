@@ -426,6 +426,48 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
 그리고 마지막에 `setup_stack()`을 호출하여 스택을 생성 및 초기화 하고 있다.
 
+```c
+void
+thread_exit (void) 
+{
+  ASSERT (!intr_context ());
+
+#ifdef USERPROG
+  process_exit ();
+#endif
+
+  /* Remove thread from all threads list, set our status to dying,
+     and schedule another process.  That process will destroy us
+     when it calls thread_schedule_tail(). */
+  intr_disable ();
+  list_remove (&thread_current()->allelem);
+  thread_current ()->status = THREAD_DYING;
+  schedule ();
+  NOT_REACHED ();
+}
+
+void
+process_exit (void)
+{
+  struct thread *cur = thread_current ();
+  uint32_t *pd;
+
+  /* Destroy the current process's page directory and switch back
+     to the kernel-only page directory. */
+  pd = cur->pagedir;
+  if (pd != NULL) 
+    {
+      cur->pagedir = NULL;
+      pagedir_activate (NULL);
+      pagedir_destroy (pd);
+    }
+}
+```
+
+Process의 종료는 `thread_exit()` -> `process_exit()`를 통해 이뤄진다.
+
+`process_exit()`는 process에게 할당된 자원들을 할당해제하는 역할을 한다.
+
 ### 3. Problems
 
 - `process_wait()`이 아무 동작도 하고 있지 않다. 
@@ -622,27 +664,166 @@ syscall_handler (struct intr_frame *f UNUSED)
 
 ### 1. Diagram
 
+![Impl Printf](../assets/2/impl_print.png)
+
 ### 2. Data Structure
+
+```c
+struct thread
+  {
+    ...
+    int exit_code;
+    ...
+  };
+```
 
 ### 3. Create
 
+None
+
 ### 4. Change
 
+- In `process.c`
+
+```c
+void
+process_exit (void)
+{
+  struct thread *cur = thread_current ();
+  uint32_t *pd;
+
+  printf("%s: exit(%d)\n",cur->name,cur->exit_code);
+
+  pd = cur->pagedir;
+  if (pd != NULL) 
+    {
+      ...
+    }
+}
+```
+
+- In `userprog/syscal.c`
+
+```c
+static void
+syscall_handler (struct intr_frame *f UNUSED) 
+{
+  int * esp = f->esp;
+  int system_call_number = * esp;
+  
+  switch (system_call_number)
+  {
+    case SYS_EXIT:
+      thread_current()->exit_code = *(esp+1);
+      thread_exit();
+      break;
+  }
+}
+```
+
 ### 5. Algorithm
+
+우선 Thread의 exit code를 저장하기 위한 멤버를 추가하였다.
+
+이 멤버는 thread가 exit system call을 부를 때, 같이 전달된 인자-exit code-를 저장하는 역할을 한다.
+
+이 저장은 `syscall_handler`에서 수행하고 있다.
+
+`process_exit`가 호출되어 thread가 종료될 때, 이 exit code와 name을 출력하면 구현이 완료된다.
 
 ## 2. Argument Passing
 
 ### 1. Diagram
 
+![Impl Agru](../assets/2/impl_argu.PNG)
+
 ### 2. Data Structure
+
+None
 
 ### 3. Create
 
+- In `process.c`
+
+```c
+void arguments_push(void **esp, char * file_name)
+{
+  /* push means and decrement stack pointer and copy data to stack pointer */
+
+  i = 0
+  argc = 0
+  loop token, i until end of token (using strtok)
+    push token
+    save *esp to argv[i]
+    argc++
+
+  push 0 for word_align
+
+  loop j from 0 to argc
+    push &argv[j]
+
+  push argv address
+  push argc
+  push fake return address
+}
+```
+
 ### 4. Change
+
+- In `process.c`
+
+```c
+tid_t
+process_execute (const char *file_name)
+{
+  /* Parse file_name to get real file name, and pass it to thread_create() */
+
+  char* parsed_file_name =strtok_r (file_name," ",&save_ptr);
+  tid = thread_create (parsed_file_name, PRI_DEFAULT, start_process, fn_copy);
+}
+```
+
+```c
+static bool
+setup_stack (void **esp, char * file_name)
+{
+  ...
+  /* Push arguments before return */
+
+  arguments_push(esp, file_name);
+  return success;
+}
+```
 
 ### 5. Algorithm
 
+우선 `process_execute`는 command line에서 파일 이름을 추출해내어 thread의 이름으로 삼는다.
+
+Argument Passingdms `setup_stack`에서 이루어진다.
+
+`setup_stack`은 stack을 초기화 하기 전, stack에 arguments를 넣어주는 `arguments_push`를 호출한다.
+
+`arguments_push`는 PPT에 제공된 convention과 동일한 순서로 Arguments를 넣어준다.
+
 ## 3. System Call
+
+### 0. Calls to Implement
+
+```c
+    SYS_HALT,                   /* Halt the operating system. */
+    SYS_EXIT,                   /* Terminate this process. */
+    SYS_EXEC,                   /* Start another process. */
+    SYS_WAIT,                   /* Wait for a child process to die. */
+    SYS_CREATE,                 /* Create a file. */
+    SYS_REMOVE,                 /* Delete a file. */
+    SYS_OPEN,                   /* Open a file. */
+    SYS_FILESIZE,               /* Obtain a file's size. */
+    SYS_READ,                   /* Read from a file. */
+    SYS_WRITE,                  /* Write to a file. */
+    SYS_SEEK,                   /* Change position in a file. */
+    SYS_TELL,                   /* Report current position in a file. */
+    SYS_CLOSE,                  /* Close a file. *
+```
 
 ### 1. Diagram
 
@@ -665,5 +846,3 @@ syscall_handler (struct intr_frame *f UNUSED)
 ### 4. Change
 
 ### 5. Algorithm
-
-// 이거 하셈
