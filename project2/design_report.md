@@ -670,7 +670,7 @@ syscall_handler (struct intr_frame *f UNUSED)
 
 ### 1. Diagram
 
-![Impl Printf](../assets/2/impl_print.png)
+![Impl Printf](../assets/2/impl_print.PNG)
 
 ### 2. Data Structure
 
