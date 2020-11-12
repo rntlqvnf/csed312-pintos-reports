@@ -58,7 +58,6 @@ syscall_exit(int status)
 
 ### Implementation
 
-<<<<<<< HEAD
 ```c
 static bool
 setup_stack (void **esp, char* file_name) 
