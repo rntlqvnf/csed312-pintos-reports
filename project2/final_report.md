@@ -21,7 +21,7 @@
 
 ### Implementation
 
-## 3. System call
+## 3. System call - User Process Manipulation
 
 ### Control Flow
 
@@ -30,32 +30,42 @@
 ### Implementation
 
 1. halt
-   
+  
 2. exit
-   
+  
 3. exec
-   
+  
 4. wait
-   
-5. create
-   
-6. remove
-   
-7. open
-   
-8. filesize
-   
-9.  read
-    
-10. write
-    
-11. seek
-    
-12. tell
-    
-13. closes
-    
-## 4. Denying Writes to Executables
+  
+## 4. System call - File Manipulation
+
+### Control Flow
+
+### Data Structure
+
+### Implementation
+
+1. create
+
+2. remove
+
+3. open
+
+4. filesize
+
+5. read
+
+6. write
+
+7. seek
+
+8. tell
+
+9. closes
+
+
+
+## 5. Denying Writes to Executables
 
 ### Control Flow
 
