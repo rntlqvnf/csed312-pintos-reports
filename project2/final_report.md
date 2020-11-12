@@ -569,55 +569,17 @@ Child가 `exit()`를 호출하여 `wait_lock`이 풀리면, child의 exit status
 
 #### Implementation
     
-### closes
+### close
    
 #### Control Flow
 
 #### Implementation
     
-=======
-1. halt
-  
-2. exit
-  
-3. exec
-  
-4. wait
-  
-## 4. System call - File Manipulation
-
-### Control Flow
-
-### Data Structure
-
-### Implementation
-
-1. create
-
-2. remove
-
-3. open
-
-4. filesize
-
-5. read
-
-6. write
-
-7. seek
-
-8. tell
-
-9. closes
-
-
-
->>>>>>> 846d043b4a33daa70e373f62d2f26e95cd967542
 ## 5. Denying Writes to Executables
 
 ### Control Flow
 
-![Argument Passing](../assets/2/deny_write.png)
+![Deny Write](../assets/2/deny_write.png)
 
 ### Data Structure
 
