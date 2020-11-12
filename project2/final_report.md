@@ -514,7 +514,7 @@ Child가 `exit()`를 호출하여 `wait_lock`이 풀리면, child의 exit status
 
 ### Data Structure
 
-`struct thread`
+`struct thread`:
 
 ```c
 struct thread
@@ -531,11 +531,17 @@ struct thread
 
 배열의 크기가 130인 이유는 기본 입출력을 위한 file descriptor 0, 1을 제외하고 최대 128개의 새로운 파일이 더 다뤄질 수 있기 때문이다.
 
+`syscall.h`:
+
+```c
+struct lock filesys_lock;
+```
+
+file system에 대한 동시 접근을 제한하기 위해 `filesys_lock`이라는 lock을 추가해 global로 선언했다.
+
 
 
 ### Overall
-
-#### Control FLow
 
 #### Implementation
 
@@ -572,6 +578,8 @@ struct lock filesys_lock;
 
 #### Control Flow
 
+![create](../assets/2/syscall_create.png)
+
 #### Implementation
 
 `syscall_create()`:
@@ -600,6 +608,8 @@ filesys_create (const char *name, off_t initial_size)
 ### remove
 
 #### Control Flow
+
+![remove](../assets/2/syscall_remove.png)
 
 #### Implementation
 
@@ -633,6 +643,8 @@ filesys_remove (const char *name)
 ### open
 
 #### Control Flow
+
+![open](../assets/2/syscall_open.png)
 
 #### Implementation
 
@@ -684,6 +696,8 @@ file open을 진행할 때 다른 system call의 동시 접근을 막기 위해 
 
 #### Control Flow
 
+![filesize](../assets/2/syscall_filesize.png)
+
 #### Implementation
 
 `syscall_filesize()`:
@@ -707,6 +721,8 @@ int syscall_filesize(int fd)
 ### read
 
 #### Control Flow
+
+![read](../assets/2/syscall_read.png)
 
 #### Implementation
 
@@ -761,6 +777,8 @@ file을 open할 때와 마찬가지로 read를 진행할 때에도 `filesys_lock
 
 #### Control Flow
 
+![write](../assets/2/syscall_write.png)
+
 #### Implementation
 
 `syscall_write()`
@@ -806,6 +824,8 @@ syscall_write(int fd, const void* buffer, unsigned size)
 
 #### Control Flow
 
+![seek](../assets/2/syscall_seek.png)
+
 #### Implementation
 
 `syscall_seek()`:
@@ -832,6 +852,8 @@ void syscall_seek(int fd, unsigned position)
 
 #### Control Flow
 
+![tell](../assets/2/syscall_tell.png)
+
 #### Implementation
 
 `syscall_tell()`:
@@ -853,6 +875,8 @@ unsigned syscall_tell(int fd)
 ### close
 
 #### Control Flow
+
+![close](../assets/2/syscall_close.png)
 
 #### Implementation
 
@@ -953,9 +977,11 @@ int syscall_open(const char* file)
 
 그래서 관점을 바꾸어서 semaphore의 소유를 child에게 넘겨서 여러가지 복잡한 condition 판단을 제거했다.
 
-//////여기 해라///////////
+**File Manipulation** 파트의 경우 구체적인 예외 상황 처리가 디자인과 달라졌다.
 
-**File Manipulation**
+기존 구현에서는 `syscall_open()`을 진행할 때 thread name과 file name을 비교하는 과정이 없었으나 실제 구현에서는 deny writing이 필요하게 됨에 따라 이 과정이 포함되었다.
+
+이외에도 file open시 file pointer가 null pointer가 아닌지 검사하는 과정 등이 실제 구현에서 추가되었다.
 
 ### 4. Denying Writes to Executables
 
@@ -982,3 +1008,5 @@ Project 1보다는 쉬웠지만, multi-oom test가 정말 어려웠었다.
 그러나 그만큼 포인터, 메모리 구조, 운영체제 등의 개념을 제대로 익힐 수 있었던 귀중한 시간이었다.
 
 - 최진수
+
+system call은 언뜻 보면 간단해 보이고, 단순히 커널의 어떤 똑같은 기능을 하는 함수를 호출하는 것이 다일 때도 있지만, 이것이 응용 프로그램의 요청으로 커널에 안전하게 접근하기 위한 방법임을 배울 수 있는 시간이었다.
