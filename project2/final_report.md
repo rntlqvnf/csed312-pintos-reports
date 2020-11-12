@@ -58,15 +58,11 @@ syscall_exit(int status)
 
 ### Implementation
 
-<<<<<<< HEAD
 ```c
 static bool
 setup_stack (void **esp, char* file_name) 
 {
     ...
-=======
-## 3. System call - User Process Manipulation
->>>>>>> 846d043b4a33daa70e373f62d2f26e95cd967542
 
   argument_passing(esp, file_name);
 
@@ -415,7 +411,6 @@ process_execute (const char *file_name)
   tid = thread_create (parsed_file_name, PRI_DEFAULT, start_process, fn_copy);
   free(parsed_file_name);
 
-<<<<<<< HEAD
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
 
@@ -575,44 +570,6 @@ Child가 `exit()`를 호출하여 `wait_lock`이 풀리면, child의 exit status
 
 #### Implementation
     
-=======
-1. halt
-  
-2. exit
-  
-3. exec
-  
-4. wait
-  
-## 4. System call - File Manipulation
-
-### Control Flow
-
-### Data Structure
-
-### Implementation
-
-1. create
-
-2. remove
-
-3. open
-
-4. filesize
-
-5. read
-
-6. write
-
-7. seek
-
-8. tell
-
-9. closes
-
-
-
->>>>>>> 846d043b4a33daa70e373f62d2f26e95cd967542
 ## 5. Denying Writes to Executables
 
 ### Control Flow
