@@ -360,13 +360,13 @@ process_exit (void)
 이후 parent가 reaping lock을 풀어주면 `thread_exit()`로 돌아가 할당 해제된다.
 
 ### exec
-   
+
 #### Control Flow
 
 ![Exec](../assets/2/exec.png)
 
 #### Implementation
-   
+
 ```c
 static void
 syscall_handler (struct intr_frame *f UNUSED) 
@@ -510,71 +510,391 @@ Child가 `exit()`를 호출하여 `wait_lock`이 풀리면, child의 exit status
 
 ### Data Structure
 
+`struct thread`:
+
+```c
+struct thread
+  {
+    /* ... */
+    
+    struct file* fd_table[130];
+		
+  	/* ... */
+  };
+```
+
+`struct thread` 에는 file descriptor table이 없었기 때문에 배열의 형태로 file pointer의 배열인 `fd_table[]`을 선언해줬다.
+
+배열의 크기가 130인 이유는 기본 입출력을 위한 file descriptor 0, 1을 제외하고 최대 128개의 새로운 파일이 더 다뤄질 수 있기 때문이다.
+
+`syscall.h`:
+
+```c
+struct lock filesys_lock;
+```
+
+file system에 대한 동시 접근을 제한하기 위해 `filesys_lock`이라는 lock을 추가해 global로 선언했다.
+
+
+
 ### Overall
 
-#### Control FLow
-
 #### Implementation
+
+`init_thread()`:
+
+```c
+static void
+init_thread (struct thread *t, const char *name, int priority)
+{
+	/* ... */
+
+  /* file descriptor */ 
+  for (int i = 0; i < 130; i++) {                                                         
+      t->fd_table[i] = NULL;                                                                
+  }   
+
+  /* ... */
+}
+```
+
+`init_thread()` 동작을 할 때 새로운 thread의 file descriptor을 NULL pointer로 초기화해준다.
+
+`pintos/src/userprog/syscall.h`:
+
+```c
+struct lock filesys_lock;
+```
+
+우리의 구현에서는 file open, read, write를 할 때 file system 전체에 대한 동시 접근을 허용하지 않기 위해 filesys_lock을 사용한다.
+
+
 
 ### create
-   
+
 #### Control Flow
 
+![create](../assets/2/syscall_create.png)
+
 #### Implementation
-   
+
+`syscall_create()`:
+
+```c
+bool syscall_create(const char* file, unsigned initial_size)
+{
+  return filesys_create(file, (off_t) initial_size);
+}
+
+/* Creates a file named NAME with the given INITIAL_SIZE.
+   Returns true if successful, false otherwise.
+   Fails if a file named NAME already exists,
+   or if internal memory allocation fails. */
+bool
+filesys_create (const char *name, off_t initial_size) 
+{
+  /* ... */
+}
+```
+
+`syscall_create()` 는 `filesys_create()`를 호출해 `const char* file` 라는 이름과 `initial_size` 크기를 갖는 file을 생성한다.
+
+
+
 ### remove
-   
+
 #### Control Flow
 
+![remove](../assets/2/syscall_remove.png)
+
 #### Implementation
-   
+
+`syscall_remove()`:
+
+```c
+bool syscall_remove(const char* file)
+{
+  return filesys_remove(file);
+}
+
+/* Deletes the file named NAME.
+   Returns true if successful, false on failure.
+   Fails if no file named NAME exists,
+   or if an internal memory allocation fails. */
+bool
+filesys_remove (const char *name) 
+{
+  struct dir *dir = dir_open_root ();
+  bool success = dir != NULL && dir_remove (dir, name);
+  dir_close (dir); 
+
+  return success;
+}
+```
+
+`syscall_remove()`는 간단하게 `filesys_remove()` 를 호출해 file name을 넘겨준다. file name을 넘겨 받은 `filesys_remove()`는 디렉토리에서 file name과 같은 파일 이름을 갖는 파일을 삭제하고 그 결과를 return한다.
+
+
+
 ### open
-   
+
 #### Control Flow
 
+![open](../assets/2/syscall_open.png)
+
 #### Implementation
-   
+
+`syscall_open()`:
+
+```c
+int syscall_open(const char* file)
+{
+  lock_acquire(&filesys_lock);
+  struct file* opened_file = filesys_open(file);
+  int i;
+  
+  if(opened_file == NULL)
+  {
+    lock_release(&filesys_lock);
+    return -1;
+  }
+
+  for(i = 2; i<130; i++)
+  {
+    if(thread_current()->fd_table[i] == NULL)
+    {
+      if(strcmp(thread_name(), file) == 0)
+        file_deny_write(opened_file);
+
+      thread_current()->fd_table[i] = opened_file;
+      lock_release(&filesys_lock);
+      return i;
+    }
+  }
+  lock_release(&filesys_lock);
+  return -1;
+}
+```
+
+file open을 진행할 때 다른 system call의 동시 접근을 막기 위해 시작할 때 `filesys_lock`에 대해 lock acquire을 진행한다.
+
+이후 file name을 가지는 파일을 열고, NULL pointer인 file descriptor, 즉 아무 file도 가리키고 있지 않은 file decriptor을 찾는다 (2부터 검색하는 이유는 0, 1은 표준 입출력이기 때문이다).
+
+만약 빈 자리를 찾게 되면 현재 thread name과 file name을 비교한다. thread name이 의미하는 것은 현재 thread에 의해 실행되고 있는 파일이기 때문에 이 경우 뒤에서 다룰 `file_deny_write()`을 이용해 `opened_file`에 대한 쓰기 권한을 통제해야 한다.
+
+그리고 빈 table에 file pointer을 저장해준다.
+
+모든 과정을 거치고 난 뒤에 file system에 대한 lock을 풀어준다.
+
+
+
 ### filesize
-   
+
 #### Control Flow
 
+![filesize](../assets/2/syscall_filesize.png)
+
 #### Implementation
-   
+
+`syscall_filesize()`:
+
+```c
+int syscall_filesize(int fd)
+{
+  if(thread_current()->fd_table[fd] == NULL)
+    return -1;
+
+  return (int) file_length(thread_current()->fd_table[fd]);
+}
+```
+
+`fd`를 받아 해당하는 file이 존재하는지 우선 살핀다. 만약 존재하지 않는다면 -1을 반환한다.
+
+그리고 존재한다면 `file_lenth()`를 호출해 file size를 반환한다.
+
+
+
 ### read
-   
+
 #### Control Flow
 
+![read](../assets/2/syscall_read.png)
+
 #### Implementation
+
+`syscall_read()`:
+
+```c
+int 
+syscall_read(int fd, const void* buffer, unsigned size)
+{
+  lock_acquire(&filesys_lock);
+  int result;
+	uint8_t* bf = (uint8_t *) buffer;
+  if(fd == 0)
+  {
+    int i = 0;
+    uint8_t b;
+    for(i=0; i<size; i++)
+    {
+      if(b = input_getc() == NULL)
+        break;
+      else
+        *bf++ = b;
+    }
+    result = i;
+  }
+  else if(fd > 1)
+  {
+    if(thread_current()->fd_table[fd] == NULL)
+      result = -1;
+    else
+      result = (int) file_read(thread_current()->fd_table[fd], buffer, (off_t) size);
+  }
+  else
+    result = -1;
+  
+  lock_release(&filesys_lock);
+  return result;
+}
+```
+
+file을 open할 때와 마찬가지로 read를 진행할 때에도 `filesys_lock`에 대한 점유가 이루어져야 한다. 
+
+만약 fd==0이라면 표준 입력이므로 키보드로 이루어지는 입력을 `input_getc()` 함수를 이용해 buffer에 저장한다.
+
+만약 fd>1이라면 파일의 데이터를 읽게 되는 것이므로 `file_read()` 를 이용해 파일의 데이터를 buffer에 저장한다.
+
+모든 과정이 끝나고 난 뒤에는 lock에 대한 점유를 풀어준다.
+
+
 
 ### write
-   
+
 #### Control Flow
 
+![write](../assets/2/syscall_write.png)
+
 #### Implementation
-    
+
+`syscall_write()`
+
+```c
+int 
+syscall_write(int fd, const void* buffer, unsigned size)
+{
+  int result;
+  lock_acquire(&filesys_lock);
+  
+  if(fd == 1)
+  {
+    putbuf(buffer, size);
+    result = size;
+  }
+  else if(fd > 1)
+  {
+    if(thread_current()->fd_table[fd] == NULL)
+      result = -1;
+    else
+      result = (int) file_write(thread_current()->fd_table[fd], buffer, (off_t) size);
+  }
+  else
+    result = -1;
+
+  lock_release(&filesys_lock);
+  return result;
+}
+```
+
+`syscall_read()`와 마찬가지로 우선 file system에 대한 lock을 점유한다.
+
+만약 fd==1이면 표준 출력을 의미하므로 buffer에 있는 데이터를 화면에 출력한다.
+
+만약 fd>1이라면 file에 데이터를 write하게 되는 것이므로 `file_write()` 를 이용해 buffer의 데이터를 file에 기록한다.
+
+모든 과정이 끝나고 난 후엔 file system에 대한 lock 점유를 풀어준다.
+
+
+
 ### seek
-   
+
 #### Control Flow
 
+![seek](../assets/2/syscall_seek.png)
+
 #### Implementation
-    
+
+`syscall_seek()`:
+
+```c
+void syscall_seek(int fd, unsigned position)
+{
+  if(thread_current()->fd_table[fd] == NULL)
+    return;
+  else
+    file_seek(thread_current()->fd_table[fd], (off_t) position);
+}
+```
+
+`syscall_seek()`는 opened file을 찾아 그 위치를 `position`만큼 이동시켜준다.
+
+만약 fd에 해당하는 table entry에 NULL pointer가 저장되어 있다면 아무 동작도 하지 않고 return한다.
+
+그렇지 않다면 `file_seek()`함수를 이용해 `position`만큼 파일 위치를 이동시킨다.
+
+
+
 ### tell
-   
+
 #### Control Flow
 
-#### Implementation
-    
-### closes
-   
-#### Control Flow
+![tell](../assets/2/syscall_tell.png)
 
 #### Implementation
-    
+
+`syscall_tell()`:
+
+```c
+unsigned syscall_tell(int fd)
+{
+  if(thread_current()->fd_table[fd] == NULL)
+    return -1;
+  else
+    return (unsigned) file_tell(thread_current()->fd_table[fd]);
+}
+```
+
+`syscall_tell()`은 단순히 file의 위치를 반환한다. 만약 fd에 해당하는 table entry가 NULL pointer라면 -1을 반환하고, 그렇지 않다면 `file_tell()`을 호출해 file pointer에 해당하는 파일의 위치를 반환한다.
+
+### close
+
+#### Control Flow
+
+![close](../assets/2/syscall_close.png)
+
+#### Implementation
+
+`syscall_close()`:
+
+```c
+void syscall_close(int fd)
+{
+  file_close(thread_current()->fd_table[fd]);
+  thread_current()->fd_table[fd] = NULL;
+}
+```
+
+`syscall_close()`는 fd가 가리키고 있는 file을 닫고 그 entry를 NULL pointer로 설정한다.
+
+우리 구현에서는 배열의 형식을 채택했으므로 별도의 메모리 해제는 필요로 하지 않는다.
+
+
+
 ## 5. Denying Writes to Executables
 
 ### Control Flow
 
-![Argument Passing](../assets/2/deny_write.png)
+![Deny Write](../assets/2/deny_write.png)
 
 ### Data Structure
 
@@ -642,7 +962,7 @@ int syscall_open(const char* file)
 ### 3. System call
 
 전체적인 구현의 방향은 같으나, 세부사항은 모두 달라졌다.
- 
+
 **User Process Manipulation** 파트의 경우 여러 synchronization 기법의 세부사항이 달라졌다.
 
 기존 구현에서는 여러가지 변수(tid, is_success, is_child_wait)들을 통해 복잡하게 synchronization을 구현했었다.
@@ -651,9 +971,11 @@ int syscall_open(const char* file)
 
 그래서 관점을 바꾸어서 semaphore의 소유를 child에게 넘겨서 여러가지 복잡한 condition 판단을 제거했다.
 
-//////여기 해라///////////
+**File Manipulation** 파트의 경우 구체적인 예외 상황 처리가 디자인과 달라졌다.
 
-**File Manipulation**
+기존 구현에서는 `syscall_open()`을 진행할 때 thread name과 file name을 비교하는 과정이 없었으나 실제 구현에서는 deny writing이 필요하게 됨에 따라 이 과정이 포함되었다.
+
+이외에도 file open시 file pointer가 null pointer가 아닌지 검사하는 과정 등이 실제 구현에서 추가되었다.
 
 ### 4. Denying Writes to Executables
 
@@ -680,3 +1002,5 @@ Project 1보다는 쉬웠지만, multi-oom test가 정말 어려웠었다.
 그러나 그만큼 포인터, 메모리 구조, 운영체제 등의 개념을 제대로 익힐 수 있었던 귀중한 시간이었다.
 
 - 최진수
+
+system call은 언뜻 보면 간단해 보이고, 단순히 커널의 어떤 똑같은 기능을 하는 함수를 호출하는 것이 다일 때도 있지만, 이것이 응용 프로그램의 요청으로 커널에 안전하게 접근하기 위한 방법임을 배울 수 있는 시간이었다.
