@@ -642,8 +642,18 @@ int syscall_open(const char* file)
 ### 3. System call
 
 전체적인 구현의 방향은 같으나, 세부사항은 모두 달라졌다.
+ 
+**User Process Manipulation** 파트의 경우 여러 synchronization 기법의 세부사항이 달라졌다.
 
-// 이거 적기
+기존 구현에서는 여러가지 변수(tid, is_success, is_child_wait)들을 통해 복잡하게 synchronization을 구현했었다.
+
+그러나 이런 구현법으로는 multi-oom을 통과할 수 없었다.
+
+그래서 관점을 바꾸어서 semaphore의 소유를 child에게 넘겨서 여러가지 복잡한 condition 판단을 제거했다.
+
+//////여기 해라///////////
+
+**File Manipulation**
 
 ### 4. Denying Writes to Executables
 
