@@ -198,7 +198,7 @@ struct thread
 
 #### Implementation
 
-```
+```c
 static void
 syscall_handler (struct intr_frame *f UNUSED) 
 {
@@ -238,10 +238,8 @@ validate_byte(const void* byte)
     return false;
 
   return true;
-}
+}/*Syscall은 스택에 인자를 넣어서 호출되게 된다.*/
 ```
-
-Syscall은 스택에 인자를 넣어서 호출되게 된다.
 
 맨 아래에는 syscall number가 들어있고, 그 위로 순서대로 첫 번째 인자, 두 번째 인자, 세 번째 인자가 들어있다.
 
