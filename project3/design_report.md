@@ -293,19 +293,19 @@ void frame_deallocate(struct frame*)
 ### 3. Algorithm
 
 1. Allocate / deallocate frames
-   
+  
    Allocation은 `frame_allocate`을 통해 할 수 있다.
 
    Deallocation은 `frame_deallocate`를 통해 할 수 있다.
 
 2. Choose a victim which returns occupying frames when free frame doesn’t exist
-   
+  
    `frame_allocate`에서 eviction 여부를 판단해서, `frame_eviction`에서 eviction을 수행하게 된다.
 
    이때 알고리즘은 clock algorithm의 구현을 목표로 한다.
 
 3. Search frames used by user process
-   
+  
    해당 frame의 소유 thread는 `page->thread`를 통해 얻을 수 있다.
 
 Frame table은 global하게 thread들이 공유한다.
@@ -534,7 +534,7 @@ bool page_destory(void *upage)
 
 ### 3. Algorithm
 
-Supplemental Page Table은 lazy loading, mmmap, swap 등이 동작하기 위한 여러가지 자료구조와 기능들을 정의하고 있다.
+Supplemental Page Table은 lazy loading, mmap, swap 등이 동작하기 위한 여러가지 자료구조와 기능들을 정의하고 있다.
 
 Page Table은 hash table로 구성되어 있으며, 각 thread마다 하나씩 가진다.
 
@@ -616,6 +616,121 @@ Page fault가 일어났는데 해당 접근이 stack 영역 내라서 stack 확�
 Stack 확장은 우선 file 없이 page를 할당해준 후, frame을 할당받아 zeroing을 해주고 이를 page에 등록하면 된다.
 
 ## 5. File Memory Mapping
+
+### 1. Data Structure
+
+- `vm/page.h`
+
+```c
+struct file_mapping{
+  int mapid;
+  struct file* file;
+  struct list_elem elem;
+  struct list frame_list;
+};
+
+```
+
+file mapping이 이루어진 후 mapping된 page들을 관리할 자료구조가 필요하다.
+
+`struct file_mapping` mapping이 이루어진 frame들을 리스트로 만들어 관리한다. 그리고 map id와 mapping을 한 file을 가리키고 있는 포인터도 함께 기억한다.
+
+
+
+- `threads/thread.h`
+
+```c
+struct thread{
+  /***/
+  struct list file_mapping_table;
+  /***/
+}
+```
+
+각 thread는 여러개의 파일을 mapping할 수 있다. `struct file_mapping`은 하나의 파일에 대해서 매핑된 frame들을 리스트로 엮어 관리하므로 `struct thread`는 이것들을 또 리스트로 묶어 관리해야 한다.
+
+
+
+### 2. Create
+
+- `userprog/syscall.c`
+
+```c
+mapid_t mmap(int fd, void *addr)
+{
+  /*
+  fd와 mapping을 시작할 주소인 addr를 인자로 받는다.
+  fd가 가리키고 있는 파일에 대해 file_reopen()을 실행해 그 정보를 저장하고, mapid를 할당한다.
+  mapping이 이루어진 frame(page)들을 모아서 file mapping entry를 만들고 file_mapping_table에 insert한다.
+  
+  만약 page table에서 virtual address에 해당하는 주소가 dirty하다면 write back을 실행해준다.
+  */
+}
+
+void munmap(mapid_t mapping)
+{
+  /*
+  특정 mapid가 가리키고 있는 file mapping entry를 삭제한다.
+  (그 전에 file mapping entry가 관리하고 있는 frame들도 모두 삭제한다.)
+  이후 파일을 닫는다.
+  */
+}
+```
+
+
+
+### 3. Modify
+
+- `userprog/exception.c`
+
+```c
+static void
+page_fault (struct intr_frame *f) 
+{
+  /*
+  if file is mapped -> load data from the file
+  */
+}
+```
+
+`page_fault()` 함수는 page fault를 핸들링하는 역할을 맡는다. 하지만 이전의 구현에서는 executing file에 대한 demand paging만이 고려되었고 mapping된 파일에 대해서 demand paging이 일어나지 않고 있으므로 만약 file이 mapping되어 있다면 file data를 memory로 loading하는 과정이 추가되어야 한다.
+
+- `userporg/process.c`
+
+```c
+void
+process_exit (void)
+{
+  /*
+  ...
+ 	mapping된 file들에 의해 할당된 frame들을 모두 할당 해제시켜주는 과정이 추가되어야 한다.
+  ...
+  */
+}
+```
+
+
+
+### 4. Algorithm
+
+- `mmap()`
+
+1. 인자로 전해지는 fd와 addr가 valid한지 체크한다.
+2. file_reopen을 이용해 file pointer을 반환하고 그것을 file mapping entry에 저장한다.
+3. mapid를 할당한다.
+4. file의 length만큼 page를 allocate한다. allocate된 page들은 file mapping entry 내의 list 안에 묶어서 저장한다.
+5. mapid를 return한다.
+
+
+
+- `munmap()`
+
+1. mapid와 맞는 file mapping entry를 file mapping table 내에서 찾는다.
+2. 해당하는 file mapping entry의 list 속의 frame들을 할당 해제한다.
+3. file을 close한다.
+4. file mapping entry를 file mapping table에서 제거한다.
+
+
 
 ## 6. Swap Table
 
