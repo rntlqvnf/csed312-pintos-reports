@@ -63,9 +63,6 @@ static bool
 setup_stack (void **esp, char* file_name) 
 {
     ...
-=======
-## 3. System call - User Process Manipulation
->>>>>>> 846d043b4a33daa70e373f62d2f26e95cd967542
 
   argument_passing(esp, file_name);
 
@@ -412,7 +409,6 @@ process_execute (const char *file_name)
   tid = thread_create (parsed_file_name, PRI_DEFAULT, start_process, fn_copy);
   free(parsed_file_name);
 
-<<<<<<< HEAD
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
 
@@ -867,8 +863,6 @@ unsigned syscall_tell(int fd)
 ```
 
 `syscall_tell()`은 단순히 file의 위치를 반환한다. 만약 fd에 해당하는 table entry가 NULL pointer라면 -1을 반환하고, 그렇지 않다면 `file_tell()`을 호출해 file pointer에 해당하는 파일의 위치를 반환한다.
-
-
 
 ### close
 
