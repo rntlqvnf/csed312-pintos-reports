@@ -109,41 +109,39 @@ static struct list_elem* frame_clock_points;
   전 후로 lock을 거는 것은 frame table을 동시 접근하는 것을 막기 위해서이다.
 
   ```c++
-  /* Remove frame by kpage */
-  void
-  frame_remove_and_free_page(void *kpage)
-  {
-      lock_acquire(&frames_lock);
-      struct frame* frame_to_remove = frame_find_by_kpage(kpage);
-      if(frame_to_remove != NULL)
-      {
-          list_remove(&frame_to_remove->elem);
-          free(frame_to_remove);
-          palloc_free_page(frame_to_remove->kpage);
-      }
-      lock_release(&frames_lock);
-  }
+    void
+    frame_remove_and_free_page(struct frame* frame_to_remove)
+    {
+        lock_acquire(&frames_lock);
+        ASSERT(frame_to_remove != NULL);
 
-  /* Remove frame by kpage without palloc_free_page */
-  void
-  frame_remove(void *kpage)
-  {
-      lock_acquire(&frames_lock);
-      struct frame* frame_to_remove = frame_find_by_kpage(kpage);
-      if(frame_to_remove != NULL)
-      {
-          list_remove(&frame_to_remove->elem);
-          free(frame_to_remove);
-      }
-      lock_release(&frames_lock);
-  }
+        if(frame_clock_points == &frame_to_remove->elem) 
+            frame_clock_points = list_next(frame_clock_points);
+        list_remove(&frame_to_remove->elem);
+        free(frame_to_remove);
+        palloc_free_page(frame_to_remove->kpage);
+        lock_release(&frames_lock);
+    }
+
+    void
+    frame_remove(struct frame* frame_to_remove)
+    {
+        lock_acquire(&frames_lock);
+        ASSERT(frame_to_remove != NULL);
+
+        if(frame_clock_points == &frame_to_remove->elem) 
+            frame_clock_points = list_next(frame_clock_points);
+        list_remove(&frame_to_remove->elem);
+        free(frame_to_remove);
+        lock_release(&frames_lock);
+    }
   ```
 
   Deallocation은 두 가지 함수에 의해 이뤄진다.
 
   `frame_remove_and_free_page`은 `palloc_free_page`를 호출하여 frame을 할당 해제하는 반면, `frame_remove`은 그러지 않는다.
 
-  굳이 위 두개를 구분해야 하는 이유는 구현의 편의를 위해서이다.
+  굳이 위 두개를 구분해야 하는 이유는 7번을 구현하기 위해서이다.
 
   `frame_remove_and_free_page`가 사용되는 경우는 page 할당이 실패하여 frame도 할당을 해제해야 하는 상황이다.
 
@@ -216,42 +214,43 @@ static struct list_elem* frame_clock_points;
   `is_back`이 있는 이유는 back에서 next를 하면 tail로 가버리기 때문이다.
 
   ```c++
-  bool
-  frame_evict(struct frame* frame)
-  {
-      ASSERT (lock_held_by_current_thread (&frames_lock));
+    bool
+    frame_evict(struct frame* frame)
+    {
+        ASSERT (lock_held_by_current_thread (&frames_lock));
 
-      struct page* page = frame->page;
-      bool dirty = pagedir_is_dirty(get_pagedir_of_frame(frame), page->upage);
-      
-      page->prev_type = page->type;
-      switch (page->type)
-      {
-      case PAGE_ZERO:
-          if(!swap_frame(page, frame)) return false;
-          break;
-      
-      case PAGE_MMAP:
-          if(dirty)
-          {
-              //TODO: Write back
-          }
-          break;
-      
-      case PAGE_FILE:
-          if(page->writable && dirty)
-              if(!swap_frame(page, frame)) return false;
-          break;
+        struct page* page = frame->page;
+        bool dirty = pagedir_is_dirty(get_pagedir_of_frame(frame), page->upage)
+            || pagedir_is_dirty(get_pagedir_of_frame(frame), frame->kpage);
 
-      default:
-          NOT_REACHED();
-          break;
-      }
+        page->prev_type = page->type;
+        switch (page->type)
+        {
+        case PAGE_ZERO:
+            if(!swap_frame(page, frame)) return false;
+            break;
+        
+        case PAGE_MMAP:
+            if(dirty)
+            {
+                //TODO: Write back
+            }
+            break;
+        
+        case PAGE_FILE:
+            if(page->writable && dirty)
+                if(!swap_frame(page, frame)) return false;
+            break;
 
-      page->frame = NULL;
-      pagedir_clear_page(get_pagedir_of_frame(frame), page->upage);
-      return true;
-  }
+        default:
+            NOT_REACHED();
+            break;
+        }
+
+        page->frame = NULL;
+        pagedir_clear_page(get_pagedir_of_frame(frame), page->upage);
+        return true;
+    }
   ```
 
   Evict할 frame을 선정했다면, eviction을 진행한다.
@@ -787,9 +786,14 @@ Swap in은 주어진 kpage에, swap_index slot에 들어있는 내용을 쓰는 
   
   각 frame마다 lock을 거는 대신 frame table에 대한 lock을 거는게 더 구현이 편해서 이렇게 바꾸었다.
 
+- `dirty` 구하는 법 변경
+  
+  Page linear 테스트를 통과하기 위해 4~5시간을 투자한 결과, dirty bit는 upage에서만 얻으면 안되고 kpage에서도 얻어야 한다는 것을 알았다.
+
 - 몇 가지 함수 추가 구현
   
   디자인 레포트에 적은 함수들만 가지고선 코드가 깔끔하지 않아서 리팩토링을 진행함에 따라 여러 함수가 더 생겨났다.
+  
 
 ## 2. Supplemental Page Table
 
