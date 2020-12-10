@@ -110,7 +110,7 @@ static struct list_elem* frame_clock_points;
 
   ```c++
     void
-    frame_remove_and_free_page(struct frame* frame_to_remove)
+    frame_remove(struct frame* frame_to_remove, bool is_free_page)
     {
         lock_acquire(&frames_lock);
         ASSERT(frame_to_remove != NULL);
@@ -119,33 +119,19 @@ static struct list_elem* frame_clock_points;
             frame_clock_points = list_next(frame_clock_points);
         list_remove(&frame_to_remove->elem);
         free(frame_to_remove);
-        palloc_free_page(frame_to_remove->kpage);
-        lock_release(&frames_lock);
-    }
-
-    void
-    frame_remove(struct frame* frame_to_remove)
-    {
-        lock_acquire(&frames_lock);
-        ASSERT(frame_to_remove != NULL);
-
-        if(frame_clock_points == &frame_to_remove->elem) 
-            frame_clock_points = list_next(frame_clock_points);
-        list_remove(&frame_to_remove->elem);
-        free(frame_to_remove);
+        if(is_free_page) 
+            palloc_free_page(frame_to_remove->kpage);
         lock_release(&frames_lock);
     }
   ```
 
-  Deallocation은 두 가지 함수에 의해 이뤄진다.
+  Deallocation은 위 함수에 의해 이뤄진다.
 
-  `frame_remove_and_free_page`은 `palloc_free_page`를 호출하여 frame을 할당 해제하는 반면, `frame_remove`은 그러지 않는다.
+  굳이 flag를 통해 free page 여부로 두개를 구분해야 하는 이유는 7번을 구현하기 위해서이다.
 
-  굳이 위 두개를 구분해야 하는 이유는 7번을 구현하기 위해서이다.
+  `palloc_free_page`가 사용되는 경우는 page 할당이 실패하여 frame도 할당을 해제해야 하는 상황이다.
 
-  `frame_remove_and_free_page`가 사용되는 경우는 page 할당이 실패하여 frame도 할당을 해제해야 하는 상황이다.
-
-  `frame_remove`가 사용되는 상황은 process가 종료할 때이다. Process가 종료하면 종료 함수에서 page를 할당 해제하므로, `palloc_free_page`를 하면 에러가 나기 때문에 이 함수가 필요하다.
+  `palloc_free_page`가 사용되지 않는 상황은 process가 종료할 때이다. Process가 종료하면 종료 함수에서 page를 할당 해제하므로, `palloc_free_page`를 하면 에러가 나기 때문이다.
 
 - Choose a victim which returns frames when free doesn't exist
   
@@ -352,7 +338,7 @@ struct thread
 
 ```c++
 bool
-page_set_with_file(
+page_create_with_file(
     void* upage, struct file* file, off_t ofs, uint32_t read_bytes, 
     uint32_t zero_bytes, bool writable, bool is_mmap)
 {
@@ -383,7 +369,7 @@ page_set_with_file(
 }
 
 bool
-page_set_with_zero(void *upage)
+page_create_with_zero(void *upage)
 {
     if(page_find_by_upage(upage) != NULL)
         return false;
@@ -414,15 +400,15 @@ page_set_with_zero(void *upage)
 
 Page는 우선 두 함수에 의해 frame이 없는 상태로 만들어진다.
 
-`page_set_with_file`는 file에서 데이터를 읽어야 하는 page를 만들 때 사용한다.
+`page_create_with_file`는 file에서 데이터를 읽어야 하는 page를 만들 때 사용한다.
 
-`page_set_with_zero`는 stack 영역의 page를 만들 때 사용한다.
+`page_create_with_zero`는 stack 영역의 page를 만들 때 사용한다.
 
 두 함수의 차이는 크게 없으나, `page_type`이 다르다.
 
-`page_set_with_file`는 `is_mmap ? PAGE_MMAP : PAGE_FILE`로 page type을 정한다.
+`page_create_with_file`는 `is_mmap ? PAGE_MMAP : PAGE_FILE`로 page type을 정한다.
 
-`page_set_with_zero`는 `PAGE_ZERO`로 고정이다.
+`page_create_with_zero`는 `PAGE_ZERO`로 고정이다.
 
 이후, 이 빈 page에 frame을 넣어주는 함수가 `page_load`이다.
 
@@ -554,7 +540,7 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
         size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
         size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-        if(!page_set_with_file(upage, file, ofs, page_read_bytes, page_zero_bytes, writable, false))
+        if(!page_create_with_file(upage, file, ofs, page_read_bytes, page_zero_bytes, writable, false))
             return false;
 
         /* Advance. */
@@ -590,7 +576,7 @@ page_fault(struct intr_frame *f)
 
     if(is_stack_access(fault_addr, f->esp))
     {
-        if(!page_set_with_zero(pg_round_down(fault_addr)))
+        if(!page_create_with_zero(pg_round_down(fault_addr)))
             syscall_exit(-1);
     }
 
@@ -632,7 +618,10 @@ Lazy Loading과 동일하다.
 static bool
 setup_stack(void **esp)
 {
-    if(!page_set_with_zero(PHYS_BASE - PGSIZE))
+    if(!page_create_with_zero(PHYS_BASE - PGSIZE))
+        return false;
+
+    if(!page_load(PHYS_BASE - PGSIZE))
         return false;
         
     *esp = PHYS_BASE;
@@ -644,9 +633,7 @@ setup_stack(void **esp)
 
 이후, 해당 영역에 access를 하면 page fault가 발생한다.
 
-그러나 `page_find_by_upage(pg_round_down(fault_addr)` 조건에 의해 곧바로 `page_load`가 수행되어 frame이 할당된다..
-
-이후 해당 영역의 밖의 stack 영역에 접근하게 되면 `page_set_with_zero`를 거쳐 page without frame을 만들고, `page_load`를 거쳐 frame을 할당해준다.
+할당된 stack 영역이 아닌 stack 영역에 접근하게 되면 `page_create_with_zero`를 거쳐 page without frame을 만들고, `page_load`를 거쳐 frame을 할당해준다.
 
 ## 5. File Memory Mapping
 
@@ -811,11 +798,11 @@ Swap in은 주어진 kpage에, swap_index slot에 들어있는 내용을 쓰는 
 
 ## 4. Stack Growth
 
-- `page_load` 전에 `page_set_with_zero` 호출
+- `page_load` 전에 `page_create_with_zero` 호출
   
-  기존 디자인 상에서는 `page_load` (구현 상에서는 `load_page`)가 모든 걸 다 수행하기로 했었다.
+  기존 디자인 상에서는 `page_load`가 모든 걸 다 수행하기로 했었다.
 
-  그러나 이는 너무 `load_page`의 역할이 커지므로, 이를 분리해냈다.
+  그러나 이는 너무 `page_load`의 역할이 커지므로, 이를 분리해냈다.
 
 ## 5. File Memory Mapping
 
