@@ -644,13 +644,167 @@ setup_stack(void **esp)
 
 ## 5. File Memory Mapping
 
-// TODO
-
 ### Control Flow
+
+![Lazy load](../assets/3/mmap.png)
 
 ### Data Structure
 
+```c
+1. syscall.h:
+
+struct file_mapping{
+  mapid_t mapid;
+  struct file* file;
+  struct list_elem elem;
+  void* base;
+  int page_count;
+};
+
+
+2. thread.h:
+
+struct thread{
+  /* ... */
+  struct list file_mapping_list;
+  /* ... */
+};
+```
+
+File memory mapping part에서는 각 thread가 mamory mapping table을 만들어 file과 page 사이를 관리하게 된다.
+
+따라서 table의 각 entry를 의미하는 data structure인 `struct file_mapping`에 mapid, file pointer, base address, page count(해당 파일이 페이지를 넘어가는 크기를 가질 수 있으므로)를 저장해 정보를 관리한다.
+
+
+
 ### Implementation
+
+- `syscall_mmap()`
+
+```c
+static mapid_t
+syscall_mmap (int fd, void *addr)
+{
+    struct file_descriptor_entry *fde = process_get_fde(fd);
+    off_t len;
+    struct file* file;
+    if(addr == NULL || !is_user_vaddr(addr) || pg_ofs(addr) != 0)
+    {
+        return -1;
+    }
+    
+    lock_acquire(&filesys_lock);
+    file = file_reopen(fde->file);
+    if(file == NULL)
+    {
+        lock_release(&filesys_lock);
+        return -1;
+    }
+    else
+    {
+        len = file_length(file);
+        lock_release(&filesys_lock);
+    }
+    
+    off_t ofs=0;
+    int page_count = 0;
+    while(len > 0)
+    {
+        int read_bytes=len >= PGSIZE ? PGSIZE : len;
+        int zero_bytes=len < PGSIZE ? (PGSIZE - len) : 0;
+        if(!page_create_with_file(addr + ofs, file, ofs, read_bytes, zero_bytes, true, true))
+        {
+            clear_previous_pages(addr, ofs);
+            file_close(file);
+            return -1;
+        }
+        ofs+=read_bytes;
+        len-=read_bytes;
+        page_count++;
+    }
+
+    return register_new_mmap(file, addr, page_count);
+}
+```
+
+`syscall_mmap()` 는 file descriptor와 base address가 인자로 주어졌을 때 file descriptor가 가리키고 있는 파일을 lazy loading을 통해 base address의 위치에 불러온다.
+
+우선 address가 valid한지 확인하기 위해 null pointer가 아닌지, user 영역을 pointing하고 있는지, 그리고 page-aligned되어 있는지 확인하고, 이 사항을 만족하지 않으면 -1을 return한다.
+
+그리고 파일을 open하고 pointer을 mmap table entry에 저장한 뒤, 해당 파일의 길이에 맞춰 lazy loading을 실시한다.
+
+위의 코드에서 while문은 파일의 length가 여러 page를 넘어갈 수 있기 때문에 사용되고 있다. `page_create_with_file()`을 이용해 page 단위로 lazy loading을 순차적으로 실행한 뒤 mmap table entry에 그 사항을 기록한다.
+
+만약 page allocating을 하다가(memory loading을 했다는 것과는 다른 의미이다) 중간에 문제가 생길 시에는 앞서 같은 파일에서 성공했던 page들도 clear시켜주는 과정이 필요하다.
+
+- `syscall_munmap()`
+
+```c
+static void
+syscall_munmap (mapid_t mapping)
+{
+    struct file_mapping *m = get_file_mapping_by_mapid(mapping);
+    if(m == NULL) return;
+    unmap(m);
+}
+
+void
+unmap(struct file_mapping* m)
+{
+    lock_acquire (&filesys_lock);
+
+    for(int i=0; i< m->page_count ; i++)
+    {
+        struct page* page = page_find_by_upage(m->base + PGSIZE * i);
+        if(page == NULL) continue;
+        if(page->frame)
+        {
+            if(pagedir_is_dirty (page->thread->pagedir, page->upage))
+                file_write_at(page->file, page->frame->kpage, PGSIZE, PGSIZE * i);
+            frame_remove(page->frame, true);
+        }
+        pagedir_clear_page (page->thread->pagedir, page->upage);
+        hash_delete (page->thread->pages, &page->elem);
+    }
+
+    list_remove(&m->elem);
+    file_close(m->file);
+    free(m);
+    lock_release (&filesys_lock);
+    return;
+}
+```
+
+첫째로, mapid를 인자로 받아 mapid에 해당하는 mmap table entry를 찾아낸다.
+
+그리고 그로부터 해당 파일이 매핑되어 있는 page들을 unmap하는 과정을 거친다.
+
+실제로 loading이 일어나 frame이 page에 배정된 상태라면 frame을 remove해준다. 만약 page directory가 dirty하다면 해당 page에 대해 write back을 실행한다.
+
+매핑된 page들에 대해서는 공통적으로 page에 저장된 정보를 지우며, hash table에서 없애는 과정이 이루어져야 한다.
+
+마지막으로 mmap table entry를 table에서 삭제한다.
+
+- `frame_evict()`
+
+```c
+bool
+frame_evict(struct frame* frame)
+{
+    /* ... */
+    
+    case PAGE_MMAP:
+        if(dirty)
+            mmap_file_write_at(page->file, frame->kpage, page->read_bytes, page->ofs);
+        break;
+    
+    /* ... */
+}
+```
+
+evict하려는 page가 dirty하다면 write back을 실행한다.
+
+
 
 ## 6. Swap Table
 
@@ -864,6 +1018,10 @@ Process를 종료할 때, 우선 `unmmap_all`을 통해 mapping 된 모든 파�
 
 ## 5. File Memory Mapping
 
+- memory mapping table의 의미 변화
+
+  기존의 디자인에서는 memory mapping table entry가 frame들을 list으로 묶어서 관리하도록 디자인했다. 하지만 이 방식을 사용할 경우, lazy loading의 구현에 적합하지 않기 때문에 table entry가 frame이 아닌 mapping이 이루어지는 page들의 정보를 저장하도록 구현을 변경하였다.
+
 ## 6. Swap Table
 
 - `block_sector_t sector`를 `size_t swap_index`로 교체
@@ -885,3 +1043,5 @@ Process를 종료할 때, 우선 `unmmap_all`을 통해 mapping 된 모든 파�
 수업을 들을 당시에는 조금 애매모호했던 VM의 개념을 확실히 잡을 수 있었다.
 
 - 최진수
+
+OS가 어떻게 메모리 체계를 관리하는지 더 자세히 알 수 있었다.
