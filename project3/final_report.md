@@ -117,10 +117,13 @@ static struct list_elem* frame_clock_points;
 
         if(frame_clock_points == &frame_to_remove->elem) 
             frame_clock_points = list_next(frame_clock_points);
-        list_remove(&frame_to_remove->elem);
-        free(frame_to_remove);
+
         if(is_free_page) 
             palloc_free_page(frame_to_remove->kpage);
+        
+        list_remove(&frame_to_remove->elem);
+        free(frame_to_remove);
+
         lock_release(&frames_lock);
     }
   ```
@@ -200,14 +203,20 @@ static struct list_elem* frame_clock_points;
   `is_back`이 있는 이유는 back에서 next를 하면 tail로 가버리기 때문이다.
 
   ```c++
+    static inline bool
+    is_dirty(struct frame* frame)
+    {
+        return pagedir_is_dirty(get_pagedir_of_frame(frame), frame->page->upage)
+        || pagedir_is_dirty(get_pagedir_of_frame(frame), frame->kpage);
+    }
+
     bool
     frame_evict(struct frame* frame)
     {
         ASSERT (lock_held_by_current_thread (&frames_lock));
 
         struct page* page = frame->page;
-        bool dirty = pagedir_is_dirty(get_pagedir_of_frame(frame), page->upage)
-            || pagedir_is_dirty(get_pagedir_of_frame(frame), frame->kpage);
+        bool dirty = is_dirty(frame);
 
         page->prev_type = page->type;
         switch (page->type)
@@ -218,9 +227,7 @@ static struct list_elem* frame_clock_points;
         
         case PAGE_MMAP:
             if(dirty)
-            {
-                //TODO: Write back
-            }
+                mmap_file_write_at(page->file, frame->kpage, page->read_bytes, page->ofs);
             break;
         
         case PAGE_FILE:
@@ -448,7 +455,7 @@ page_load(void *upage)
     
     if(!success || !pagedir_set_page(thread_current ()->pagedir, upage, new_frame->kpage, page_to_load->writable))
     {
-        frame_remove_and_free_page(new_frame->kpage);
+        frame_remove(new_frame, true);
         return false;
     }
 
@@ -462,7 +469,7 @@ page_load_with_file(struct frame* f,struct page* p)
 {
     if (file_read_at(p->file, f->kpage, p->read_bytes, p->ofs) != (int) p->read_bytes)
     {
-        frame_remove_and_free_page(f->kpage);
+        frame_remove(f, true);
         return false;
     }
     memset(f->kpage + p->read_bytes, 0, p->zero_bytes);
@@ -673,9 +680,9 @@ void
 swap_init(void)
 {
     swap_block_device = block_get_role(BLOCK_SWAP);
-    if(swap_block_device == NULL) PANIC("Cannot get swap disk");
+    ASSERT(swap_block_device != NULL);
     swap_bitmap = bitmap_create(block_size(swap_block_device) / NUM_SECTORS_PER_PAGE);
-    if(swap_bitmap == NULL) PANIC("Cannot create swap bitmap");
+    ASSERT(swap_bitmap != NULL);
     bitmap_set_all (swap_bitmap, true);
     lock_init(&swap_lock);
 }
@@ -751,13 +758,64 @@ Swap in은 주어진 kpage에, swap_index slot에 들어있는 내용을 쓰는 
 
 ## 7. On Process Termination
 
-// TODO
-
 ### Implementation
+
+```c++
+void process_exit(void)
+{
+    /* Destory page table */
+    page_exit();
+}
+
+static void
+unmap_all()
+{
+    struct list_elem *e;
+    struct file_mapping *m;
+    for (e = list_begin (&thread_current()->file_mapping_list); e != list_end (&thread_current()->file_mapping_list);)
+    {
+        struct file_mapping *mmap = list_entry (e, struct file_mapping, elem);
+        e = list_next (e);
+        unmap (mmap);
+    }
+}
+
+void
+page_exit(void)
+{
+    struct hash* h = thread_current()->pages;
+    if(h != NULL)
+        hash_destroy(h, page_destory);
+}
+
+void
+page_destory (struct hash_elem *e, void *aux UNUSED)
+{
+    struct page* p = hash_entry(e, struct page, elem);
+    if(p->frame)
+        frame_remove(p->frame, false);
+    if(p->swap_index != BITMAP_ERROR) 
+        swap_remove(p->swap_index);
+    free(p);
+}
+
+void
+swap_remove(size_t swap_index)
+{
+    lock_acquire(&swap_lock);
+    ASSERT(swap_index != BITMAP_ERROR);
+    bitmap_set(swap_bitmap, swap_index, true);
+    lock_release(&swap_lock);
+}
+```
+
+Process를 종료할 때, 우선 `unmmap_all`을 통해 mapping 된 모든 파일을 종료하며, dirty frame을 write back한다.
+
+그리고 `page_exit`를 통해 `page`와 `frame`을 모두 할당해제 해준다.
 
 # Screenshot
 
-// TODO
+![RESULT](../assets/3/result.png)
 
 # Discussion
 
@@ -814,7 +872,11 @@ Swap in은 주어진 kpage에, swap_index slot에 들어있는 내용을 쓰는 
 
 ## 7. On Process Termination
 
-// TODO
+- `unmmap_all` 추가
+  
+  디자인 상에서는 이 구현에 대해서 생각하지 않았었다.
+
+  그러나 구현을 하다가, 이걸 구현하지 않으면 mmap exit를 통과하지 못한다는 걸 알고, 구현하게 되었다.
 
 ## Review
 
